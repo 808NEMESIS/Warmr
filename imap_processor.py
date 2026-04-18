@@ -777,6 +777,116 @@ def main() -> None:
         except Exception as exc:
             logger.error("Inbox %s: unhandled spam rescue error: %s", inbox_email, exc)
 
+    # ── Path 1b: Client inbox reply-back to warmup network replies ─────────
+    # When a warmup Gmail replies to our client inbox, sometimes reply back
+    # to simulate a natural multi-turn conversation (max 3 messages per thread).
+    warmup_emails: set[str] = {a["email"].lower() for a in warmup_network} if warmup_network else set()
+    REPLY_BACK_RATE = 0.50  # 50% chance to reply back to a warmup reply
+
+    for inbox in raw_inboxes:
+        inbox_email = inbox["email"]
+        inbox_id = inbox["id"]
+        password = inbox_passwords.get(inbox_email.lower())
+        if not password:
+            continue
+
+        provider = inbox.get("provider", "google")
+        imap_host = get_imap_server(provider)
+        smtp_host = get_smtp_server(provider)
+
+        try:
+            mail = imaplib.IMAP4_SSL(imap_host, IMAP_PORT)
+            mail.login(inbox_email, password)
+            mail.select("INBOX")
+
+            # Search for unread emails FROM warmup network accounts
+            reply_ids: list[bytes] = []
+            for warmup_email in warmup_emails:
+                try:
+                    status, msg_ids = mail.search(None, "UNSEEN", "FROM", f'"{warmup_email}"')
+                    if status == "OK" and msg_ids and msg_ids[0]:
+                        reply_ids.extend(msg_ids[0].split())
+                except Exception:
+                    pass
+
+            reply_ids = list(dict.fromkeys(reply_ids))
+            if not reply_ids:
+                mail.logout()
+                continue
+
+            logger.info("Client inbox %s: found %d unread warmup reply(ies).", inbox_email, len(reply_ids))
+
+            for msg_id in reply_ids:
+                try:
+                    status, msg_data = mail.fetch(msg_id, "(RFC822)")
+                    if status != "OK" or not msg_data or not msg_data[0]:
+                        continue
+
+                    raw = msg_data[0][1] if isinstance(msg_data[0], tuple) else b""
+                    parsed = email_lib.message_from_bytes(raw)
+                    sender_address = extract_sender_address(parsed)
+                    subject = decode_header_value(parsed.get("Subject", ""))
+
+                    if sender_address not in warmup_emails:
+                        continue
+
+                    # Mark as read
+                    mail.store(msg_id, "+FLAGS", "\\Seen")
+
+                    # Count Re: depth — stop after 3 exchanges
+                    re_depth = subject.lower().count("re:")
+                    if re_depth >= 3:
+                        logger.debug("Client inbox %s: thread depth %d for '%s' — not replying.", inbox_email, re_depth, subject[:40])
+                        continue
+
+                    # Decide whether to reply back
+                    if random.random() >= REPLY_BACK_RATE:
+                        continue
+
+                    body = get_email_body(parsed)
+                    sender_name = inbox_email.split("@")[0].replace(".", " ").title()
+                    recipient_name = sender_address.split("@")[0].replace(".", " ").title()
+
+                    try:
+                        reply_body = generate_reply(
+                            claude_client, body, sender_name, recipient_name,
+                            supabase_client=supabase, client_id=inbox.get("client_id"),
+                        )
+                    except Exception as exc:
+                        logger.error("Client inbox %s: reply generation failed: %s", inbox_email, exc)
+                        continue
+
+                    try:
+                        send_reply_via_smtp(
+                            smtp_host=smtp_host,
+                            sender_email=inbox_email,
+                            sender_password=password,
+                            sender_name=sender_name,
+                            recipient_email=sender_address,
+                            original_subject=subject,
+                            reply_body=reply_body,
+                        )
+                        log_action(
+                            supabase,
+                            inbox_id=inbox_id,
+                            action="replied",
+                            reputation_score=inbox.get("reputation_score") or 50.0,
+                            counterpart_email=sender_address,
+                            subject=f"Re: {subject}" if not subject.lower().startswith("re:") else subject,
+                            was_replied=True,
+                        )
+                        update_reputation(supabase, inbox_id, inbox.get("reputation_score") or 50.0, {"replied": 1})
+                        logger.info("Client inbox %s: replied back to %s (depth %d).", inbox_email, sender_address, re_depth + 1)
+                    except Exception as exc:
+                        logger.error("Client inbox %s: SMTP reply-back failed: %s", inbox_email, exc)
+
+                except Exception as exc:
+                    logger.error("Client inbox %s: error processing warmup reply: %s", inbox_email, exc)
+
+            mail.logout()
+        except Exception as exc:
+            logger.error("Client inbox %s: reply-back processing error: %s", inbox_email, exc)
+
     # ── Path 2: Warmup network account processing ──────────────────────────
     if not warmup_network:
         logger.warning("No warmup network accounts configured — skipping network processing.")

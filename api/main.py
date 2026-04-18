@@ -1132,7 +1132,25 @@ async def reset_daily_counts(client_id: ClientId) -> dict:
     )
     updated = len(resp.data or [])
     logger.info("Reset daily_sent for %d inboxes (client: %s)", updated, client_id)
-    return {"reset": True, "inboxes_updated": updated}
+
+    # Apply engagement score decay
+    decayed = 0
+    try:
+        from engagement_scorer import apply_daily_decay
+        decayed = apply_daily_decay(_supabase)
+    except Exception as exc:
+        logger.debug("Engagement decay skipped: %s", exc)
+
+    # Check nurture re-engagement
+    reengaged = 0
+    try:
+        from funnel_engine import check_nurture_reengagement
+        reengaged_ids = check_nurture_reengagement(_supabase, client_id)
+        reengaged = len(reengaged_ids)
+    except Exception as exc:
+        logger.debug("Nurture re-engagement check skipped: %s", exc)
+
+    return {"reset": True, "inboxes_updated": updated, "engagement_decayed": decayed, "leads_reengaged": reengaged}
 
 
 @app.get("/analytics/weekly-report", tags=["Analytics"])
@@ -3520,6 +3538,190 @@ async def update_experiment(experiment_id: str, body: dict, client_id: ClientId)
 # ---------------------------------------------------------------------------
 # Static frontend — MUST be last so API routes take priority
 # ---------------------------------------------------------------------------
+# Campaign cloning
+# ---------------------------------------------------------------------------
+
+@app.post("/campaigns/{campaign_id}/clone", tags=["Campaigns"], status_code=201)
+async def clone_campaign(campaign_id: str, client_id: ClientId, body: dict = {}) -> dict:
+    """Clone an existing campaign with all its sequence steps."""
+    # Fetch original campaign
+    orig = _supabase.table("campaigns").select("*").eq("id", campaign_id).limit(1).execute()
+    if not orig.data:
+        raise HTTPException(status_code=404, detail="Campaign not found.")
+    campaign = orig.data[0]
+    if campaign.get("client_id") != client_id:
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    # Fetch original sequence steps
+    steps = _supabase.table("sequence_steps").select("*").eq("campaign_id", campaign_id).order("step_number").execute()
+
+    # Create new campaign
+    new_name = body.get("name") or f"{campaign['name']} (kopie)"
+    new_campaign = {k: v for k, v in campaign.items() if k not in ("id", "created_at", "updated_at")}
+    new_campaign["name"] = new_name
+    new_campaign["status"] = "draft"
+    resp = _supabase.table("campaigns").insert(new_campaign).execute()
+    if not resp.data:
+        raise HTTPException(status_code=500, detail="Failed to clone campaign.")
+    new_id = resp.data[0]["id"]
+
+    # Clone sequence steps
+    cloned_steps = 0
+    for step in (steps.data or []):
+        new_step = {k: v for k, v in step.items() if k not in ("id",)}
+        new_step["campaign_id"] = new_id
+        try:
+            _supabase.table("sequence_steps").insert(new_step).execute()
+            cloned_steps += 1
+        except Exception:
+            pass
+
+    return {"id": new_id, "name": new_name, "cloned_steps": cloned_steps}
+
+
+# ---------------------------------------------------------------------------
+# Funnel management
+# ---------------------------------------------------------------------------
+
+@app.get("/funnel/overview", tags=["Funnel"])
+async def funnel_overview(client_id: ClientId) -> dict:
+    """Current funnel stage distribution for the authenticated client."""
+    from funnel_engine import snapshot_funnel
+    return snapshot_funnel(_supabase, client_id)
+
+
+@app.get("/funnel/analytics", tags=["Funnel"])
+async def funnel_analytics(client_id: ClientId, days: int = Query(default=30)) -> list[dict]:
+    """Daily funnel snapshots for trend analysis."""
+    cutoff = _days_ago_utc(days)
+    resp = (
+        _supabase.table("funnel_analytics")
+        .select("*")
+        .eq("client_id", client_id)
+        .gte("date", cutoff[:10])
+        .order("date")
+        .execute()
+    )
+    return resp.data or []
+
+
+@app.post("/funnel/route-reply", tags=["Funnel"])
+async def route_reply_endpoint(client_id: ClientId, body: dict) -> dict:
+    """
+    Route a classified reply through the funnel engine.
+
+    Body: { lead_id, lead_email, classification, campaign_id?, reply_body? }
+    """
+    from funnel_engine import route_reply
+    lead_id = body.get("lead_id", "")
+    lead_email = body.get("lead_email", "")
+    classification = body.get("classification", "other")
+    campaign_id = body.get("campaign_id")
+    reply_body = body.get("reply_body", "")
+
+    if not lead_id or not classification:
+        raise HTTPException(status_code=422, detail="lead_id and classification are required.")
+
+    return route_reply(_supabase, client_id, lead_id, lead_email, classification, campaign_id, reply_body)
+
+
+@app.get("/funnel/routing-rules", tags=["Funnel"])
+async def get_routing_rules(client_id: ClientId) -> list[dict]:
+    """Get reply routing rules for the authenticated client."""
+    resp = _supabase.table("reply_routing_rules").select("*").eq("client_id", client_id).execute()
+    rules = resp.data or []
+    if not rules:
+        # Seed defaults
+        from funnel_engine import seed_default_rules
+        seed_default_rules(_supabase, client_id)
+        resp = _supabase.table("reply_routing_rules").select("*").eq("client_id", client_id).execute()
+        rules = resp.data or []
+    return rules
+
+
+@app.patch("/funnel/routing-rules/{rule_id}", tags=["Funnel"])
+async def update_routing_rule(rule_id: str, client_id: ClientId, body: dict) -> dict:
+    """Update a reply routing rule."""
+    check = _supabase.table("reply_routing_rules").select("client_id").eq("id", rule_id).limit(1).execute()
+    if not check.data or check.data[0]["client_id"] != client_id:
+        raise HTTPException(status_code=404, detail="Rule not found.")
+    allowed = {"action", "auto_reply_template", "notify", "active"}
+    patch = {k: v for k, v in body.items() if k in allowed}
+    if not patch:
+        raise HTTPException(status_code=422, detail="No valid fields to update.")
+    resp = _supabase.table("reply_routing_rules").update(patch).eq("id", rule_id).execute()
+    return resp.data[0] if resp.data else {"id": rule_id}
+
+
+@app.post("/funnel/move-stage", tags=["Funnel"])
+async def move_lead_stage(client_id: ClientId, body: dict) -> dict:
+    """Manually move a lead to a different funnel stage."""
+    from funnel_engine import move_to_stage, STAGES
+    lead_id = body.get("lead_id", "")
+    new_stage = body.get("stage", "")
+    if not lead_id or new_stage not in STAGES:
+        raise HTTPException(status_code=422, detail=f"lead_id required, stage must be one of: {', '.join(STAGES)}")
+    # Verify lead belongs to client
+    lead = _supabase.table("leads").select("client_id").eq("id", lead_id).limit(1).execute()
+    if not lead.data or lead.data[0]["client_id"] != client_id:
+        raise HTTPException(status_code=403, detail="Access denied.")
+    move_to_stage(_supabase, lead_id, new_stage, "manual")
+    return {"lead_id": lead_id, "new_stage": new_stage}
+
+
+# ---------------------------------------------------------------------------
+# Funnel sequence templates (per stage)
+# ---------------------------------------------------------------------------
+
+_FUNNEL_TEMPLATES = {
+    "cold_intro_nl": {
+        "stage": "cold",
+        "name": "Cold intro (NL)",
+        "steps": [
+            {"step_number": 1, "subject": "vraag over {{company}}", "body": "Hi {{first_name}},\n\nKwam {{company}} tegen en had een korte vraag: hoe lossen jullie nu {{pain_point}} op?\n\nWij helpen vergelijkbare bedrijven met {{value_prop}}.\n\nOpen voor een kort gesprek?\n\n{{sender_name}}", "wait_days": 0},
+            {"step_number": 2, "subject": "re: {{company}}", "body": "Hi {{first_name}},\n\nWeet niet of mijn vorige mail aankwam. Kort voorbeeld: {{similar_company}} bespaarde {{result}} met onze aanpak.\n\nIs dit relevant voor jullie?\n\n{{sender_name}}", "wait_days": 3},
+        ],
+    },
+    "warm_followup_nl": {
+        "stage": "warm",
+        "name": "Warm follow-up (NL)",
+        "steps": [
+            {"step_number": 3, "subject": "case {{similar_company}}", "body": "Hi {{first_name}},\n\nDeze case is wellicht interessant: {{similar_company}} had hetzelfde probleem en loste het als volgt op.\n\n[link naar case]\n\nBenieuwd hoe jullie dit nu aanpakken.\n\n{{sender_name}}", "wait_days": 4},
+            {"step_number": 4, "subject": "{{first_name}}, nog even dit", "body": "Hi {{first_name}},\n\nLaatste opvolging van mij. Mocht het nu niet passen, helemaal prima.\n\nVoor als het later wél relevant wordt: {{calendar_link}}\n\nSucces!\n\n{{sender_name}}", "wait_days": 5},
+        ],
+    },
+    "hot_meeting_nl": {
+        "stage": "hot",
+        "name": "Meeting request (NL)",
+        "steps": [
+            {"step_number": 1, "subject": "15 min volgende week?", "body": "Hi {{first_name}},\n\nLeuk dat je interesse hebt! Zullen we volgende week 15 minuten inplannen?\n\nHier is mijn agenda: {{calendar_link}}\n\nKies een moment dat je uitkomt.\n\n{{sender_name}}", "wait_days": 0},
+        ],
+    },
+    "breakup_nl": {
+        "stage": "warm",
+        "name": "Break-up (NL)",
+        "steps": [
+            {"step_number": 5, "subject": "laatste mail", "body": "Hi {{first_name}},\n\nIk neem aan dat dit nu niet de juiste timing is — dat snap ik.\n\nMocht het later wél relevant worden, ping gerust. Verder geen mails van mij.\n\nSucces met alles,\n{{sender_name}}", "wait_days": 5},
+        ],
+    },
+}
+
+
+@app.get("/funnel/templates", tags=["Funnel"])
+async def funnel_templates(
+    client_id: ClientId,
+    stage: Optional[str] = Query(default=None),
+) -> list[dict]:
+    """Get sequence templates organized by funnel stage."""
+    templates = []
+    for tid, t in _FUNNEL_TEMPLATES.items():
+        if stage and t["stage"] != stage:
+            continue
+        templates.append({"id": tid, **t})
+    return templates
+
+
+# ---------------------------------------------------------------------------
 # GDPR — data export & right to erasure
 # ---------------------------------------------------------------------------
 
@@ -4391,6 +4593,12 @@ async def track_open(token: str, request: Request) -> Response:
                 }).execute()
             except Exception:
                 logger.debug("Failed to write email_events for open tracking: %s", token)
+            # Engagement score: +5 for open
+            try:
+                from engagement_scorer import add_engagement
+                add_engagement(_supabase, lead_id, "opened")
+            except Exception:
+                pass
     except Exception as exc:
         logger.debug("Tracking pixel error for token %s: %s", token[:20], exc)
     return Response(
@@ -4427,6 +4635,12 @@ async def track_click(token: str, url: str = Query(...), request: Request = None
                 }).execute()
             except Exception:
                 logger.debug("Failed to write email_events for click tracking: %s", token[:20])
+            # Engagement score: +10 for click
+            try:
+                from engagement_scorer import add_engagement
+                add_engagement(_supabase, lead_id, "clicked")
+            except Exception:
+                pass
     except Exception as exc:
         logger.debug("Click tracking error for token %s: %s", token[:20], exc)
     return RedirectResponse(url=url, status_code=302)

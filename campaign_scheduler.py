@@ -608,6 +608,63 @@ def process_lead(
         logger.warning("campaign_lead %s has no lead data — skipping.", campaign_lead_id)
         return False
 
+    # ── Timezone-aware sending: skip if outside recipient's business hours ──
+    lead_country = (lead.get("country") or "").upper()
+    if lead_country and lead_country != "NL":
+        _COUNTRY_TZ = {
+            "NL": "Europe/Amsterdam", "BE": "Europe/Brussels", "LU": "Europe/Luxembourg",
+            "DE": "Europe/Berlin", "FR": "Europe/Paris", "GB": "Europe/London",
+            "US": "America/New_York", "CA": "America/Toronto",
+        }
+        recipient_tz_name = _COUNTRY_TZ.get(lead_country)
+        if recipient_tz_name:
+            try:
+                recipient_tz = ZoneInfo(recipient_tz_name)
+                recipient_hour = datetime.now(recipient_tz).hour
+                if recipient_hour < 8 or recipient_hour >= 18:
+                    # Outside recipient business hours — defer to tomorrow 9:00 their time
+                    tomorrow_9 = (datetime.now(recipient_tz) + timedelta(days=1)).replace(hour=9, minute=random.randint(0, 30), second=0)
+                    tomorrow_utc = tomorrow_9.astimezone(timezone.utc).isoformat()
+                    supabase.table("campaign_leads").update({"next_send_at": tomorrow_utc}).eq("id", campaign_lead_id).execute()
+                    logger.info("Lead %s: outside recipient hours (%s, %d:00) — deferred to tomorrow.", lead.get("email"), lead_country, recipient_hour)
+                    return False
+            except Exception:
+                pass
+
+    # ── Company-level dedup: max 1 email per company per day ────────────
+    lead_domain = (lead.get("domain") or lead.get("email", "").split("@")[-1]).lower()
+    if lead_domain and lead_domain not in ("gmail.com", "hotmail.com", "outlook.com", "yahoo.com"):
+        try:
+            today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00")
+            domain_sends = (
+                supabase.table("email_events")
+                .select("id", count="exact")
+                .eq("campaign_id", campaign_id)
+                .eq("event_type", "sent")
+                .gte("created_at", today_iso)
+                .execute()
+            )
+            # Check if any sent leads share this domain today
+            if domain_sends.data:
+                sent_lead_ids = [e.get("lead_id") for e in domain_sends.data if e.get("lead_id")]
+                if sent_lead_ids:
+                    domain_check = (
+                        supabase.table("leads")
+                        .select("id")
+                        .in_("id", sent_lead_ids[:50])
+                        .eq("domain", lead_domain)
+                        .limit(1)
+                        .execute()
+                    )
+                    if domain_check.data:
+                        logger.info("Lead %s: company domain %s already contacted today — deferring.", lead.get("email"), lead_domain)
+                        # Push next_send_at to tomorrow
+                        tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).replace(hour=8, minute=0).isoformat()
+                        supabase.table("campaign_leads").update({"next_send_at": tomorrow}).eq("id", campaign_lead_id).execute()
+                        return False
+        except Exception as exc:
+            logger.debug("Company dedup check failed for %s: %s", lead_domain, exc)
+
     # ── Check suppression list ───────────────────────────────────────────
     if is_suppressed(supabase, client_id, lead["email"]):
         mark_campaign_lead(supabase, campaign_lead_id, "unsubscribed")
@@ -752,6 +809,12 @@ def process_lead(
             last_inbox_id=inbox_id,
         )
         mark_lead_status(supabase, lead_id, "contacted")
+        # Funnel: sequence done without reply → nurture
+        try:
+            from funnel_engine import on_sequence_complete
+            on_sequence_complete(supabase, lead_id)
+        except Exception:
+            pass
     else:
         next_send = _next_send_at(wait_days, campaign, tz)
         update_campaign_lead_after_send(
@@ -763,6 +826,12 @@ def process_lead(
             completed=False,
             last_inbox_id=inbox_id,
         )
+        # Funnel: check stage progression based on engagement
+        try:
+            from funnel_engine import check_stage_progression
+            check_stage_progression(supabase, lead_id, current_step, len(all_steps))
+        except Exception:
+            pass
 
     # Short delay between sends within the same run to avoid burst patterns
     time.sleep(random.uniform(MIN_SEND_DELAY, MAX_SEND_DELAY))
