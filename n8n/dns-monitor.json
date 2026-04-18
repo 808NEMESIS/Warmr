@@ -1,0 +1,175 @@
+{
+  "name": "Warmr — DNS Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "minutes", "minutesInterval": 15 }]
+        }
+      },
+      "name": "Every 15 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.WARMR_API_URL }}/domains/dns-check-all?mode=drift",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.WARMR_API_TOKEN }}" }
+          ]
+        },
+        "options": { "timeout": 30000 }
+      },
+      "name": "Trigger DNS Drift Check",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [{ "value1": "={{ $json.ok }}", "value2": true }]
+        }
+      },
+      "name": "Check drift OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {},
+      "name": "DNS Drift OK",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [900, 200]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/warmup_logs",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "method": "POST",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "action", "value": "error" },
+            { "name": "notes", "value": "=DNS drift check failed: {{ $json.message || 'unknown error' }}" }
+          ]
+        }
+      },
+      "name": "Log DNS Drift Error",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [900, 400]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "hours", "hoursInterval": 6 }]
+        }
+      },
+      "name": "Every 6 hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [240, 600]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.WARMR_API_URL }}/domains/dns-check-all?mode=blacklist",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.WARMR_API_TOKEN }}" }
+          ]
+        },
+        "options": { "timeout": 120000 }
+      },
+      "name": "Trigger Blacklist Check",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [460, 600]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [{ "value1": "={{ $json.new_listings }}", "value2": 0, "operation": "larger" }]
+        }
+      },
+      "name": "New blacklist hits?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [680, 600]
+    },
+    {
+      "parameters": {
+        "url": "https://api.resend.com/emails",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.RESEND_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ from: $env.ALERT_FROM_EMAIL, to: [$env.ALERT_TO_EMAIL], subject: '🚨 Blacklist hit detected — ' + $json.new_listings + ' domain(s)', html: '<p><strong>' + $json.new_listings + ' domain(s)</strong> have been detected on a blacklist.</p><p>Log in to Warmr to view the recovery guide.</p>' }) }}"
+      },
+      "name": "Send Blacklist Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [900, 500]
+    },
+    {
+      "parameters": {},
+      "name": "Blacklist Clean",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [900, 700]
+    }
+  ],
+  "connections": {
+    "Every 15 min": {
+      "main": [[{ "node": "Trigger DNS Drift Check", "type": "main", "index": 0 }]]
+    },
+    "Trigger DNS Drift Check": {
+      "main": [[{ "node": "Check drift OK", "type": "main", "index": 0 }]]
+    },
+    "Check drift OK": {
+      "main": [
+        [{ "node": "DNS Drift OK", "type": "main", "index": 0 }],
+        [{ "node": "Log DNS Drift Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Every 6 hours": {
+      "main": [[{ "node": "Trigger Blacklist Check", "type": "main", "index": 0 }]]
+    },
+    "Trigger Blacklist Check": {
+      "main": [[{ "node": "New blacklist hits?", "type": "main", "index": 0 }]]
+    },
+    "New blacklist hits?": {
+      "main": [
+        [{ "node": "Send Blacklist Alert", "type": "main", "index": 0 }],
+        [{ "node": "Blacklist Clean", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": { "executionOrder": "v1" }
+}

@@ -1,0 +1,119 @@
+{
+  "name": "Warmr — Webhook Dispatcher",
+  "nodes": [
+    {
+      "id": "f6a7b8c9-0006-0006-0006-000000000001",
+      "name": "Schedule: Every 1 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "f6a7b8c9-0006-0006-0006-000000000002",
+      "name": "POST /webhooks/dispatch",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WARMR_API_BASE }}/webhooks/dispatch",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.WARMR_API_TOKEN }}" }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "id": "f6a7b8c9-0006-0006-0006-000000000003",
+      "name": "Success?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 300],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "cond-1",
+              "leftValue": "={{ $json.ok ?? true }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "f6a7b8c9-0006-0006-0006-000000000004",
+      "name": "OK — Events dispatched",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [960, 200],
+      "parameters": {}
+    },
+    {
+      "id": "f6a7b8c9-0006-0006-0006-000000000005",
+      "name": "Log dispatch error",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 420],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/warmup_logs",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ action: 'error', notes: 'n8n webhook-dispatcher: ' + ($json.error || JSON.stringify($json)), timestamp: new Date().toISOString() }) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Schedule: Every 1 min": {
+      "main": [
+        [{ "node": "POST /webhooks/dispatch", "type": "main", "index": 0 }]
+      ]
+    },
+    "POST /webhooks/dispatch": {
+      "main": [
+        [{ "node": "Success?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Success?": {
+      "main": [
+        [{ "node": "OK — Events dispatched", "type": "main", "index": 0 }],
+        [{ "node": "Log dispatch error", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true },
+  "meta": { "templateCredsSetupCompleted": true, "instanceId": "warmr" },
+  "notes": "Triggers a webhook dispatch cycle every minute.\nDelivers all pending webhook_events to registered client endpoints.\nRetries failed deliveries with backoff: 1m → 5m → 30m.\nPOSTs are signed with HMAC-SHA256 (X-Warmr-Signature header).\n\nNote: webhook_dispatcher.py can also run as a standalone process if preferred over n8n polling."
+}

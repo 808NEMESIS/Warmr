@@ -1,0 +1,157 @@
+{
+  "name": "Warmr — Experiment Monitor",
+  "nodes": [
+    {
+      "id": "em000001-0001-0001-0001-000000000001",
+      "name": "Schedule: Every 6 hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 */6 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "em000001-0001-0001-0001-000000000002",
+      "name": "GET /experiments (active only)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.WARMR_API_BASE }}/experiments?status=active",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.WARMR_ADMIN_TOKEN }}" }
+          ]
+        },
+        "options": { "timeout": 15000 }
+      },
+      "continueOnFail": true
+    },
+    {
+      "id": "em000001-0001-0001-0001-000000000003",
+      "name": "Split experiments",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [720, 300],
+      "parameters": {
+        "batchSize": 1
+      }
+    },
+    {
+      "id": "em000001-0001-0001-0001-000000000004",
+      "name": "GET /experiments/{id} (live stats)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.WARMR_API_BASE }}/experiments/{{ $json.id }}",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.WARMR_ADMIN_TOKEN }}" }
+          ]
+        },
+        "options": { "timeout": 15000 }
+      },
+      "continueOnFail": true
+    },
+    {
+      "id": "em000001-0001-0001-0001-000000000005",
+      "name": "Ready to conclude?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1200, 300],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "cond-winner",
+              "leftValue": "={{ $json.preliminary_winner !== null && $json.preliminary_winner !== undefined }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "em000001-0001-0001-0001-000000000006",
+      "name": "Create notification: experiment ready",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1440, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/notifications",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ client_id: $json.client_id, type: 'experiment_ready', entity_id: $json.id, entity_type: 'experiment', message: 'Experiment \"' + $json.name + '\" heeft een voorlopige winnaar: ' + ($json.preliminary_winner === 'variant' ? 'Variant (B)' : 'Controle (A)'), priority: 'high', timestamp: new Date().toISOString() }) }}",
+        "options": {}
+      },
+      "continueOnFail": true
+    },
+    {
+      "id": "em000001-0001-0001-0001-000000000007",
+      "name": "No action needed",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1440, 420]
+    }
+  ],
+  "connections": {
+    "Schedule: Every 6 hours": {
+      "main": [
+        [{ "node": "GET /experiments (active only)", "type": "main", "index": 0 }]
+      ]
+    },
+    "GET /experiments (active only)": {
+      "main": [
+        [{ "node": "Split experiments", "type": "main", "index": 0 }]
+      ]
+    },
+    "Split experiments": {
+      "main": [
+        [{ "node": "GET /experiments/{id} (live stats)", "type": "main", "index": 0 }]
+      ]
+    },
+    "GET /experiments/{id} (live stats)": {
+      "main": [
+        [{ "node": "Ready to conclude?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Ready to conclude?": {
+      "main": [
+        [{ "node": "Create notification: experiment ready", "type": "main", "index": 0 }],
+        [{ "node": "No action needed", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true },
+  "meta": { "templateCredsSetupCompleted": true, "instanceId": "warmr" },
+  "notes": "Checks all active experiments every 6 hours.\nFor each experiment with a preliminary winner (>5pp delta, ≥20 sends each),\ncreates a 'high' priority notification in Supabase so the user is prompted\nto conclude the experiment from the experiments.html page."
+}

@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Warmr — Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <style>
+    /* ── Dashboard-specific ──── */
+    .warmup-section-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 1rem;
+    }
+    .section-title {
+      font-size: 1rem; font-weight: 700; color: var(--text);
+    }
+    .section-link { font-size: .8125rem; color: var(--primary); cursor: pointer; }
+    .section-link:hover { text-decoration: underline; }
+
+    /* Notif panel */
+    .notif-panel-empty {
+      text-align: center; padding: 2rem 1rem; color: var(--muted); font-size: .875rem;
+    }
+
+    /* Trend indicator */
+    .trend-up   { color: var(--success); }
+    .trend-down { color: var(--danger); }
+    .trend-flat { color: var(--muted); }
+    .trend-badge {
+      display: inline-flex; align-items: center; gap: .2rem;
+      font-size: .7rem; font-weight: 700; padding: .15rem .45rem;
+      border-radius: 4px;
+    }
+    .trend-badge.up   { background: #d4f5ed; color: #00856d; }
+    .trend-badge.down { background: #fde8e4; color: #c0392b; }
+
+    /* Quick actions */
+    .quick-action-btn {
+      display: flex; flex-direction: column; align-items: center; gap: .5rem;
+      padding: 1.25rem 1rem; background: var(--surface);
+      border: 1.5px solid var(--border); border-radius: var(--radius-card);
+      cursor: pointer; transition: all var(--transition); min-width: 110px; flex: 1;
+      text-decoration: none; color: var(--text);
+    }
+    .quick-action-btn:hover {
+      border-color: var(--primary); background: #f4f1ff;
+      box-shadow: var(--shadow-md); transform: translateY(-1px); text-decoration: none;
+    }
+    .quick-action-icon {
+      width: 40px; height: 40px; border-radius: 10px;
+      background: var(--gradient); display: flex; align-items: center;
+      justify-content: center; color: #fff; font-size: 1.125rem;
+    }
+    .quick-action-label { font-size: .8rem; font-weight: 600; color: var(--text); }
+
+    /* Activity event type colours */
+    .ev-sent     { background: #ede8ff; color: var(--primary); }
+    .ev-rescue   { background: #d4f5ed; color: var(--success); }
+    .ev-error    { background: #fde8e4; color: var(--danger); }
+    .ev-replied  { background: #d4f5ed; color: var(--success); }
+    .ev-bounced  { background: #fde8e4; color: var(--danger); }
+    .ev-opened   { background: #e3f1ff; color: #0066cc; }
+    .ev-received { background: #ede8ff; color: var(--primary); }
+
+    /* Skeleton rows */
+    .skel-row { height: 20px; border-radius: 6px; margin-bottom: .625rem; }
+
+    /* Notif dropdown */
+    .notif-dropdown {
+      position: absolute; top: calc(100% + .5rem); right: 0;
+      width: 360px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: var(--radius-card);
+      box-shadow: var(--shadow-lg); z-index: 300; overflow: hidden;
+    }
+    .notif-dropdown-header {
+      padding: .875rem 1.125rem; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: .875rem; font-weight: 700;
+    }
+    .notif-dropdown-body { max-height: 360px; overflow-y: auto; padding: .75rem; }
+    .notif-dropdown-footer {
+      padding: .75rem 1.125rem; border-top: 1px solid var(--border);
+      text-align: center;
+    }
+
+    /* Inbox health rep colour */
+    .rep-high { color: var(--success); }
+    .rep-mid  { color: var(--warning); }
+    .rep-low  { color: var(--danger); }
+
+    /* Modal new campaign */
+    #modal-campaign { display: none; }
+    #modal-inbox    { display: none; }
+    #modal-domain   { display: none; }
+  </style>
+</head>
+<body>
+
+<!-- ── Sidebar ──────────────────────────────────────────────────────────── -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-mark">W</div>
+    <span class="logo-text">Warmr</span>
+  </div>
+
+  <div style="padding:.75rem 0;flex:1">
+    <div class="sidebar-section-label">Overzicht</div>
+    <a class="nav-link active" href="dashboard.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+      Dashboard
+    </a>
+
+    <div class="sidebar-section-label">Campagnes</div>
+    <a class="nav-link" href="campaigns.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 9.8 19.79 19.79 0 0112 4.18a2 2 0 012 2V8l2 1.5"/><path d="M14 2a7 7 0 010 14"/></svg>
+      Campagnes
+    </a>
+    <a class="nav-link" href="leads.html" id="nav-leads">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+      Leads
+    </a>
+    <a class="nav-link" href="unified-inbox.html" id="nav-replies">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+      Unified Inbox
+    </a>
+
+    <div class="sidebar-section-label">Infrastructuur</div>
+    <a class="nav-link" href="inboxes.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+      Inboxes
+    </a>
+    <a class="nav-link" href="domains.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>
+      Domeinen
+    </a>
+
+    <div class="sidebar-section-label">Inzichten</div>
+    <a class="nav-link" href="decisions.html" id="nav-decisions">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      Beslissingen
+      <span class="badge badge-muted" id="sidebar-decisions-badge" style="display:none;margin-left:auto;font-size:.65rem;padding:.1rem .45rem">0</span>
+    </a>
+    <a class="nav-link" href="experiments.html" id="nav-experiments">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/></svg>
+      Experimenten
+      <span class="badge badge-success" id="sidebar-exp-badge" style="display:none;margin-left:auto;font-size:.65rem;padding:.1rem .45rem">0</span>
+    </a>
+
+    <div class="sidebar-section-label">Account</div>
+    <a class="nav-link" href="settings.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+      Instellingen
+    </a>
+  </div>
+
+  <div class="sidebar-footer">
+    <div style="display:flex;align-items:center;gap:.75rem">
+      <div class="avatar avatar-sm" id="sidebar-avatar">?</div>
+      <div style="flex:1;min-width:0">
+        <div class="text-sm font-semi truncate" id="sidebar-name">Laden…</div>
+        <div class="text-xs text-muted">Pro plan</div>
+      </div>
+      <button class="btn-icon" onclick="logout()" title="Uitloggen">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      </button>
+    </div>
+  </div>
+</aside>
+
+<!-- ── Topbar ─────────────────────────────────────────────────────────────── -->
+<header class="topbar">
+  <div class="topbar-left">
+    <h1 style="font-size:1.25rem;font-family:var(--font-disp);font-weight:400">Dashboard</h1>
+  </div>
+  <div class="topbar-right">
+    <!-- Range selector -->
+    <select class="form-select" id="range-select" style="width:auto;font-size:.8125rem;padding:.4rem .8rem" onchange="loadAll()">
+      <option value="7">Afgelopen 7 dagen</option>
+      <option value="30" selected>Afgelopen 30 dagen</option>
+      <option value="90">Afgelopen 90 dagen</option>
+    </select>
+
+    <!-- Notification bell -->
+    <div class="relative">
+      <button class="notif-btn" id="bell-btn" onclick="toggleNotifDropdown()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+        <span class="notif-badge" id="bell-badge" style="display:none">0</span>
+      </button>
+
+      <!-- Dropdown -->
+      <div class="notif-dropdown" id="notif-dropdown" style="display:none">
+        <div class="notif-dropdown-header">
+          <span>Notificaties</span>
+          <button class="btn-icon text-xs" onclick="markAllRead()">Alles gelezen</button>
+        </div>
+        <div class="notif-dropdown-body" id="notif-dropdown-body">
+          <div class="notif-panel-empty">Laden…</div>
+        </div>
+        <div class="notif-dropdown-footer">
+          <a href="#" class="text-sm text-primary">Alle notificaties</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Client menu -->
+    <div id="topbar-client" style="display:flex;align-items:center;gap:.625rem;cursor:pointer" onclick="window.location.href='settings.html'">
+      <div class="avatar avatar-sm">?</div>
+      <span class="text-sm font-semi client-name" style="max-width:120px" class="truncate">—</span>
+    </div>
+  </div>
+</header>
+
+<!-- ── Main content ───────────────────────────────────────────────────────── -->
+<div class="main-layout">
+  <div class="main-content">
+    <div class="page">
+
+      <!-- Stats row -->
+      <div class="stats-grid" id="stats-grid">
+        <!-- Skeletons while loading -->
+        <div class="stat-card"><div class="stat-label">Inboxes klaar</div><div class="skeleton skel-row" style="width:60px;height:32px;margin-top:.25rem"></div></div>
+        <div class="stat-card"><div class="stat-label">Warmup actief</div><div class="skeleton skel-row" style="width:60px;height:32px;margin-top:.25rem"></div></div>
+        <div class="stat-card"><div class="stat-label">E-mails (periode)</div><div class="skeleton skel-row" style="width:80px;height:32px;margin-top:.25rem"></div></div>
+        <div class="stat-card"><div class="stat-label">Gem. reputatie</div><div class="skeleton skel-row" style="width:60px;height:32px;margin-top:.25rem"></div></div>
+        <div class="stat-card"><div class="stat-label">Actieve campagnes</div><div class="skeleton skel-row" style="width:40px;height:32px;margin-top:.25rem"></div></div>
+      </div>
+
+      <!-- Insights strip -->
+      <div id="insights-strip" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1rem;margin-bottom:1.5rem">
+        <!-- Decisions card -->
+        <a href="decisions.html" class="card" style="padding:1.125rem 1.375rem;text-decoration:none;transition:box-shadow var(--transition),border-color var(--transition)" onmouseover="this.style.boxShadow='var(--shadow-md)';this.style.borderColor='var(--primary-lt)'" onmouseout="this.style.boxShadow='';this.style.borderColor=''">
+          <div style="display:flex;align-items:center;gap:.75rem">
+            <div style="width:36px;height:36px;border-radius:10px;background:#ede8ff;display:flex;align-items:center;justify-content:center;color:var(--primary);font-size:1rem;flex-shrink:0">📊</div>
+            <div>
+              <div style="font-size:.75rem;font-weight:600;color:var(--muted)">Beslissingen</div>
+              <div style="font-size:.9375rem;font-weight:700;color:var(--text)" id="insight-decisions">—</div>
+            </div>
+          </div>
+          <div style="font-size:.75rem;color:var(--muted);margin-top:.625rem" id="insight-decisions-sub">Zonder effect-meting: —</div>
+        </a>
+        <!-- Experiments card -->
+        <a href="experiments.html" class="card" style="padding:1.125rem 1.375rem;text-decoration:none;transition:box-shadow var(--transition),border-color var(--transition)" onmouseover="this.style.boxShadow='var(--shadow-md)';this.style.borderColor='var(--primary-lt)'" onmouseout="this.style.boxShadow='';this.style.borderColor=''">
+          <div style="display:flex;align-items:center;gap:.75rem">
+            <div style="width:36px;height:36px;border-radius:10px;background:#d4f5ed;display:flex;align-items:center;justify-content:center;color:var(--success);font-size:1rem;flex-shrink:0">🧪</div>
+            <div>
+              <div style="font-size:.75rem;font-weight:600;color:var(--muted)">Experimenten actief</div>
+              <div style="font-size:.9375rem;font-weight:700;color:var(--text)" id="insight-experiments">—</div>
+            </div>
+          </div>
+          <div style="font-size:.75rem;color:var(--muted);margin-top:.625rem" id="insight-experiments-sub">Afgerond: —</div>
+        </a>
+        <!-- Pending decisions needing effect eval -->
+        <a href="decisions.html" class="card" style="padding:1.125rem 1.375rem;text-decoration:none;transition:box-shadow var(--transition),border-color var(--transition)" onmouseover="this.style.boxShadow='var(--shadow-md)';this.style.borderColor='var(--primary-lt)'" onmouseout="this.style.boxShadow='';this.style.borderColor=''">
+          <div style="display:flex;align-items:center;gap:.75rem">
+            <div style="width:36px;height:36px;border-radius:10px;background:#fff3e0;display:flex;align-items:center;justify-content:center;color:#e67e22;font-size:1rem;flex-shrink:0">⏳</div>
+            <div>
+              <div style="font-size:.75rem;font-weight:600;color:var(--muted)">Effect te meten</div>
+              <div style="font-size:.9375rem;font-weight:700;color:var(--text)" id="insight-pending-effect">—</div>
+            </div>
+          </div>
+          <div style="font-size:.75rem;color:var(--muted);margin-top:.625rem">Beslissingen van afgelopen 14 dagen</div>
+        </a>
+      </div>
+
+      <!-- Quick actions -->
+      <div class="card" style="margin-bottom:1.5rem;padding:1.25rem 1.5rem">
+        <div class="section-title" style="margin-bottom:1rem">Snelle acties</div>
+        <div class="quick-actions">
+          <a class="quick-action-btn" href="campaigns.html#new">
+            <div class="quick-action-icon">📣</div>
+            <span class="quick-action-label">+ Campagne</span>
+          </a>
+          <a class="quick-action-btn" href="inboxes.html#new">
+            <div class="quick-action-icon">📧</div>
+            <span class="quick-action-label">+ Inbox</span>
+          </a>
+          <a class="quick-action-btn" href="domains.html#new">
+            <div class="quick-action-icon">🌐</div>
+            <span class="quick-action-label">+ Domein</span>
+          </a>
+          <a class="quick-action-btn" href="leads.html">
+            <div class="quick-action-icon">📋</div>
+            <span class="quick-action-label">Leads importeren</span>
+          </a>
+          <div class="quick-action-btn" onclick="triggerWarmup()">
+            <div class="quick-action-icon">🚀</div>
+            <span class="quick-action-label">Warmup starten</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Main 2-col grid -->
+      <div class="content-grid">
+
+        <!-- Left column -->
+        <div style="display:flex;flex-direction:column;gap:1.5rem">
+
+          <!-- Warmup health -->
+          <div class="card">
+            <div class="card-header">
+              <span class="section-title">Inbox gezondheid</span>
+              <a class="section-link" href="inboxes.html">Alle inboxes →</a>
+            </div>
+            <div class="card-body">
+              <div class="inbox-health-grid" id="inbox-health-grid">
+                <div class="skeleton" style="height:120px;border-radius:var(--radius-card)"></div>
+                <div class="skeleton" style="height:120px;border-radius:var(--radius-card)"></div>
+                <div class="skeleton" style="height:120px;border-radius:var(--radius-card)"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Recent activity -->
+          <div class="card">
+            <div class="card-header">
+              <span class="section-title">Recente activiteit</span>
+              <span class="badge badge-muted" id="activity-count">…</span>
+            </div>
+            <div class="card-body" style="padding-top:.5rem;padding-bottom:.5rem">
+              <div id="activity-feed">
+                <!-- Skeleton rows -->
+                <div style="display:flex;flex-direction:column;gap:.75rem;padding:.5rem 0">
+                  ${Array.from({length:6},()=>`<div class="skeleton skel-row"></div>`).join('')}
+                </div>
+              </div>
+            </div>
+            <div class="card-footer" style="text-align:center">
+              <a class="text-sm text-primary" href="#">Bekijk alle activiteit</a>
+            </div>
+          </div>
+
+          <!-- Top campaigns table -->
+          <div class="card">
+            <div class="card-header">
+              <span class="section-title">Top campagnes</span>
+              <a class="section-link" href="campaigns.html">Alle campagnes →</a>
+            </div>
+            <div class="table-wrapper">
+              <table class="data-table" id="top-campaigns-table">
+                <thead>
+                  <tr>
+                    <th>Campagne</th>
+                    <th>Verzonden</th>
+                    <th>Open rate</th>
+                    <th>Reply rate</th>
+                    <th>Bounce rate</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="top-campaigns-tbody">
+                  <tr><td colspan="6"><div class="skeleton skel-row"></div></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+        </div><!-- /left col -->
+
+        <!-- Right column: notifications panel -->
+        <div>
+          <div class="card" style="position:sticky;top:calc(var(--topbar-h) + 1.5rem)">
+            <div class="card-header">
+              <span class="section-title">Meldingen</span>
+              <span class="badge badge-danger" id="notif-count-badge" style="display:none">0</span>
+            </div>
+            <!-- Filter tabs -->
+            <div style="display:flex;gap:.375rem;padding:.625rem .875rem .25rem;border-bottom:1px solid var(--border)">
+              <button class="filter-chip active" id="ntab-all" style="font-size:.72rem;padding:.25rem .625rem" onclick="setNotifTab('all')">Alles</button>
+              <button class="filter-chip" id="ntab-error" style="font-size:.72rem;padding:.25rem .625rem" onclick="setNotifTab('error')">Fouten</button>
+              <button class="filter-chip" id="ntab-spam" style="font-size:.72rem;padding:.25rem .625rem" onclick="setNotifTab('spam_rescue')">Spam</button>
+              <button class="filter-chip" id="ntab-warn" style="font-size:.72rem;padding:.25rem .625rem" onclick="setNotifTab('warning')">Waarsch.</button>
+            </div>
+            <div class="card-body" style="padding:.875rem;max-height:520px;overflow-y:auto" id="notif-panel">
+              <div class="notif-panel-empty">Laden…</div>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /content-grid -->
+    </div><!-- /page -->
+  </div><!-- /main-content -->
+</div>
+
+<!-- ── Modals (placeholders, full forms in inboxes/domains/campaigns pages) -->
+<div id="toast-container"></div>
+
+<!-- Close dropdown on outside click -->
+<script>
+  document.addEventListener('click', e => {
+    const dd = document.getElementById('notif-dropdown');
+    const btn = document.getElementById('bell-btn');
+    if (dd && !dd.contains(e.target) && !btn.contains(e.target)) {
+      dd.style.display = 'none';
+    }
+  });
+</script>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+<script>
+  // ── Init ────────────────────────────────────────────────────────────────────
+  let _range = 30;
+  let _overview = null;
+  let _inboxes  = null;
+  let _notifs   = null;
+
+  (async () => {
+    await requireAuth();
+    await populateTopbar();
+    populateSidebar();
+    loadAll();
+  })();
+
+  function populateSidebar() {
+    // Mirrors populateTopbar but targets sidebar elements
+    _supabase.auth.getUser().then(({ data: { user } }) => {
+      if (!user) return;
+      const email = user.email || '';
+      const initials = email.slice(0,2).toUpperCase();
+      const name = email.split('@')[0];
+      const avatar = document.getElementById('sidebar-avatar');
+      const nameEl = document.getElementById('sidebar-name');
+      if (avatar) avatar.textContent = initials;
+      if (nameEl) nameEl.textContent = name;
+    });
+  }
+
+  async function loadAll() {
+    _range = parseInt(document.getElementById('range-select').value, 10);
+    await Promise.allSettled([
+      loadOverview(),
+      loadInboxHealth(),
+      loadActivity(),
+      loadNotifications(),
+      loadInsights(),
+    ]);
+  }
+
+  // ── Overview stats ───────────────────────────────────────────────────────────
+  async function loadOverview() {
+    try {
+      const data = await api(`/analytics/overview?days=${_range}`);
+      _overview = data;
+      renderStats(data);
+      renderTopCampaigns(data.top_campaigns || []);
+    } catch (e) {
+      toast('Dashboard laden mislukt: ' + e.message, 'error');
+    }
+  }
+
+  const _STAT_ARROW_UP   = `<svg width="10" height="10" viewBox="0 0 10 10"><polyline points="1,7 5,3 9,7" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>`;
+  const _STAT_ARROW_DOWN = `<svg width="10" height="10" viewBox="0 0 10 10"><polyline points="1,3 5,7 9,3" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>`;
+
+  function renderStats(d) {
+    const grid = document.getElementById('stats-grid');
+    const emails = d.emails || {};
+    const inboxes = d.inboxes || {};
+    const camps = d.campaigns || {};
+
+    grid.innerHTML = `
+      <div class="stat-card">
+        <div class="stat-label">Inboxes klaar</div>
+        <div class="stat-value">${inboxes.ready ?? '—'}</div>
+        <div class="stat-sub">van ${inboxes.total ?? '—'} totaal</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Warmup actief</div>
+        <div class="stat-value">${inboxes.active ?? '—'}</div>
+        <div class="stat-sub">Gem. reputatie ${inboxes.avg_reputation ?? '—'}/100</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">E-mails verzonden</div>
+        <div class="stat-value">${fmtNum(emails.sent)}</div>
+        <div class="stat-sub">
+          Open ${fmtRate(emails.open_rate)} · Reply ${fmtRate(emails.reply_rate)}
+        </div>
+      </div>
+      <div class="stat-card ${inboxes.avg_reputation >= 70 ? '' : 'accent'}">
+        <div class="stat-label">Gem. reputatiescore</div>
+        <div class="stat-value">${inboxes.avg_reputation ?? '—'}</div>
+        <div class="stat-sub">${inboxes.avg_reputation >= 70 ? '✓ Goed' : '⚠ Nog in opbouw'}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Actieve campagnes</div>
+        <div class="stat-value">${camps.active ?? '—'}</div>
+        <div class="stat-sub">${camps.total ?? 0} totaal · ${d.replies_unread ?? 0} ongelezen replies</div>
+      </div>
+    `;
+  }
+
+  // ── Top campaigns table ──────────────────────────────────────────────────────
+  function renderTopCampaigns(camps) {
+    const tbody = document.getElementById('top-campaigns-tbody');
+    if (!camps.length) {
+      tbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted" style="padding:2rem">Geen campagnes gevonden</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = camps.map(c => `
+      <tr style="cursor:pointer" onclick="window.location.href='campaigns.html#detail-${c.campaign_id||c.id}'">
+        <td class="font-semi truncate" style="max-width:180px" title="${c.name}">${c.name}</td>
+        <td>${fmtNum(c.sent)}</td>
+        <td>${fmtRate(c.open_rate || 0)}</td>
+        <td>${fmtRate(c.reply_rate)}</td>
+        <td>
+          <span class="${(c.bounce_rate||0) > 0.03 ? 'text-danger font-semi' : ''}">${fmtRate(c.bounce_rate)}</span>
+        </td>
+        <td><span class="badge ${c.sent > 0 ? 'badge-success' : 'badge-muted'}">${c.sent > 0 ? 'Actief' : 'Concept'}</span></td>
+      </tr>`).join('');
+  }
+
+  // ── Inbox health ─────────────────────────────────────────────────────────────
+  async function loadInboxHealth() {
+    try {
+      const inboxes = await api(`/analytics/inboxes?days=${_range}`);
+      _inboxes = inboxes;
+
+      // Fetch real reputation history per inbox in parallel
+      const historyPromises = inboxes.slice(0, 9).map(async (inbox) => {
+        try {
+          const h = await api(`/warmup/inbox/${inbox.inbox_id || inbox.id}/history?days=${_range}`);
+          inbox._history = (h.series || []).map(d => d.avg_reputation).filter(v => v != null);
+          inbox._dailySent = (h.series || []).map(d => d.sent);
+        } catch { inbox._history = []; inbox._dailySent = []; }
+        return inbox;
+      });
+      await Promise.all(historyPromises);
+
+      renderInboxHealth(inboxes.slice(0, 9));
+    } catch (e) {
+      document.getElementById('inbox-health-grid').innerHTML =
+        `<div class="text-sm text-muted">Kon inboxes niet laden: ${e.message}</div>`;
+    }
+  }
+
+  function renderInboxHealth(inboxes) {
+    const grid = document.getElementById('inbox-health-grid');
+    if (!inboxes.length) {
+      grid.innerHTML = `
+        <div class="empty-state" style="grid-column:1/-1">
+          <div class="empty-state-icon">📧</div>
+          <h3>Nog geen inboxes</h3>
+          <p>Voeg een inbox toe om met de warmup te beginnen.</p>
+          <a href="inboxes.html#new" class="btn btn-primary btn-sm" style="margin-top:.875rem">+ Inbox toevoegen</a>
+        </div>`;
+      return;
+    }
+    grid.innerHTML = inboxes.map(inbox => {
+      const rep = inbox.reputation_score_current || 0;
+      const repClass = rep >= 70 ? 'rep-high' : rep >= 40 ? 'rep-mid' : 'rep-low';
+      const statusBadge = inbox.status === 'ready'
+        ? `<span class="badge badge-success badge-dot">Klaar</span>`
+        : inbox.status === 'warmup'
+        ? `<span class="badge badge-warning badge-dot">Warmup</span>`
+        : `<span class="badge badge-muted badge-dot">${inbox.status}</span>`;
+
+      // Real reputation sparkline (falls back to flat line if no history)
+      const histScores = (inbox._history && inbox._history.length >= 2) ? inbox._history : [rep, rep];
+      const spark = sparkline(histScores, 100, 30, rep >= 70 ? 'var(--success)' : rep >= 40 ? 'var(--warning)' : 'var(--danger)');
+
+      return `
+        <div class="inbox-card" onclick="window.location.href='inboxes.html#inbox-${inbox.inbox_id||inbox.id}'" style="cursor:pointer">
+          <div class="inbox-card-top">
+            <div>
+              <div class="inbox-email truncate" style="max-width:160px" title="${inbox.email}">${inbox.email}</div>
+              <div class="inbox-domain">${inbox.domain}</div>
+            </div>
+            ${statusBadge}
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <div class="inbox-rep ${repClass}">${rep.toFixed(0)}<span style="font-size:.875rem;font-weight:400;color:var(--muted)">/100</span></div>
+            <div style="color:${rep>=70?'var(--success)':rep>=40?'var(--warning)':'var(--danger)'}">${spark}</div>
+          </div>
+          <div class="rep-bar">
+            <div class="progress-bar" style="height:4px">
+              <div class="progress-fill" style="width:${rep}%;background:${rep>=70?'var(--success)':rep>=40?'var(--warning)':'var(--danger)'}"></div>
+            </div>
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-top:.625rem">
+            <span class="text-xs text-muted">↑ ${inbox.warmup_sent} warmup</span>
+            <span class="text-xs text-muted">${inbox.campaign_sent} campagne</span>
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  // ── Activity feed ─────────────────────────────────────────────────────────────
+  // Activity is derived from warmup_logs (via /notifications endpoint) + email_events
+  async function loadActivity() {
+    try {
+      // Use notifications endpoint as proxy for activity (it queries warmup_logs + bounce_log)
+      const notifs = await api(`/notifications?days=${_range}`);
+      renderActivityFeed(notifs.slice(0, 12));
+      document.getElementById('activity-count').textContent = notifs.length + ' events';
+    } catch (e) {
+      document.getElementById('activity-feed').innerHTML =
+        `<div class="text-sm text-muted text-center" style="padding:1rem">Activiteit niet beschikbaar</div>`;
+    }
+  }
+
+  const _NOTIF_ICONS = {
+    error:          { icon:'⚠', cls:'ev-error' },
+    spam_rescue:    { icon:'🛡', cls:'ev-rescue' },
+    complaint:      { icon:'🚫', cls:'ev-error' },
+    low_reputation: { icon:'📉', cls:'ev-bounced' },
+    sent:           { icon:'✉', cls:'ev-sent' },
+    replied:        { icon:'↩', cls:'ev-replied' },
+    opened:         { icon:'👁', cls:'ev-opened' },
+  };
+
+  function renderActivityFeed(events) {
+    const feed = document.getElementById('activity-feed');
+    if (!events.length) {
+      feed.innerHTML = `<div class="notif-panel-empty">Geen recente activiteit</div>`;
+      return;
+    }
+    feed.innerHTML = events.map(ev => {
+      const meta = _NOTIF_ICONS[ev.type] || { icon:'•', cls:'ev-sent' };
+      return `
+        <div class="activity-item">
+          <div class="activity-icon ${meta.cls}">${meta.icon}</div>
+          <div style="flex:1;min-width:0">
+            <div class="activity-msg truncate">${ev.message}</div>
+            ${ev.inbox_email ? `<div class="activity-sub">${ev.inbox_email}</div>` : ''}
+          </div>
+          <div class="activity-time">${timeAgo(ev.timestamp)}</div>
+        </div>`;
+    }).join('');
+  }
+
+  // ── Notifications ──────────────────────────────────────────────────────────────
+  async function loadNotifications() {
+    try {
+      const notifs = await api('/notifications?days=3');
+      _notifs = notifs;
+      renderNotifPanel(notifs);
+      renderNotifDropdown(notifs);
+      const unread = notifs.length;
+      const badge = document.getElementById('bell-badge');
+      const countBadge = document.getElementById('notif-count-badge');
+      if (unread > 0) {
+        badge.textContent = unread > 9 ? '9+' : unread;
+        badge.style.display = 'flex';
+        countBadge.textContent = unread;
+        countBadge.style.display = 'inline-flex';
+      } else {
+        badge.style.display = 'none';
+        countBadge.style.display = 'none';
+      }
+    } catch {}
+  }
+
+  const _NOTIF_DOT_CLS = {
+    error: 'error', spam_rescue: 'rescue', complaint: 'error',
+    low_reputation: 'warning', warning: 'warning', info: 'info',
+  };
+
+  function _notifItemHtml(n) {
+    const dotCls = _NOTIF_DOT_CLS[n.type] || 'info';
+    return `
+      <div class="notif-item">
+        <div class="notif-dot ${dotCls}"></div>
+        <div style="flex:1;min-width:0">
+          <div class="notif-msg">${n.message}</div>
+          <div class="notif-time">${timeAgo(n.timestamp)}</div>
+        </div>
+      </div>`;
+  }
+
+  function renderNotifPanel(notifs) {
+    const panel = document.getElementById('notif-panel');
+    const filtered = _notifTab === 'all'
+      ? notifs
+      : notifs.filter(n => n.type === _notifTab || (n.type || '').includes(_notifTab));
+    if (!filtered.length) {
+      panel.innerHTML = `<div class="notif-panel-empty">${_notifTab === 'all' ? 'Geen meldingen — alles in orde ✓' : 'Geen ' + _notifTab + ' meldingen'}</div>`;
+      return;
+    }
+    panel.innerHTML = filtered.slice(0, 15).map(_notifItemHtml).join('');
+  }
+
+  function renderNotifDropdown(notifs) {
+    const body = document.getElementById('notif-dropdown-body');
+    if (!notifs.length) {
+      body.innerHTML = `<div class="notif-panel-empty">Geen meldingen</div>`;
+      return;
+    }
+    body.innerHTML = notifs.slice(0, 8).map(_notifItemHtml).join('');
+  }
+
+  function toggleNotifDropdown() {
+    const dd = document.getElementById('notif-dropdown');
+    dd.style.display = dd.style.display === 'none' ? 'block' : 'none';
+  }
+
+  // ── Insights strip ────────────────────────────────────────────────────────
+  async function loadInsights() {
+    try {
+      const [decisions, experiments] = await Promise.allSettled([
+        api('/decisions?limit=200'),
+        api('/experiments'),
+      ]);
+
+      if (decisions.status === 'fulfilled') {
+        const decs = decisions.value || [];
+        const pendingEffect = decs.filter(d => d.effect === null || d.effect === undefined).length;
+        document.getElementById('insight-decisions').textContent = decs.length;
+        document.getElementById('insight-decisions-sub').textContent = `Zonder effect-meting: ${pendingEffect}`;
+        document.getElementById('insight-pending-effect').textContent = pendingEffect;
+
+        // Sidebar badge for pending effect
+        const decBadge = document.getElementById('sidebar-decisions-badge');
+        if (pendingEffect > 0) {
+          decBadge.textContent = pendingEffect;
+          decBadge.style.display = 'inline-flex';
+        }
+      }
+
+      if (experiments.status === 'fulfilled') {
+        const exps = experiments.value || [];
+        const active = exps.filter(e => e.status === 'active').length;
+        const concluded = exps.filter(e => e.status === 'concluded').length;
+        document.getElementById('insight-experiments').textContent = active;
+        document.getElementById('insight-experiments-sub').textContent = `Afgerond: ${concluded}`;
+
+        // Sidebar badge for active experiments
+        const expBadge = document.getElementById('sidebar-exp-badge');
+        if (active > 0) {
+          expBadge.textContent = active;
+          expBadge.style.display = 'inline-flex';
+        }
+      }
+    } catch {}
+  }
+
+  // ── Notification filter tabs ──────────────────────────────────────────────
+  let _notifTab = 'all';
+
+  function setNotifTab(tab) {
+    _notifTab = tab;
+    document.querySelectorAll('[id^="ntab-"]').forEach(el => el.classList.remove('active'));
+    document.getElementById('ntab-' + (tab === 'warning' ? 'warn' : tab === 'spam_rescue' ? 'spam' : tab)).classList.add('active');
+    if (_notifs) renderNotifPanel(_notifs);
+  }
+
+  function markAllRead() {
+    document.getElementById('notif-dropdown').style.display = 'none';
+    document.getElementById('bell-badge').style.display = 'none';
+    document.getElementById('notif-count-badge').style.display = 'none';
+    document.getElementById('notif-panel').innerHTML = `<div class="notif-panel-empty">Geen meldingen — alles in orde ✓</div>`;
+  }
+
+  // ── Warmup trigger ─────────────────────────────────────────────────────────
+  async function triggerWarmup() {
+    try {
+      const res = await api('/warmup/trigger', { method: 'POST' });
+      toast(res.message, 'success');
+    } catch (e) {
+      toast('Warmup starten mislukt: ' + e.message, 'error');
+    }
+  }
+
+  // Auto-refresh every 3 minutes
+  setInterval(loadAll, 3 * 60 * 1000);
+</script>
+</body>
+</html>

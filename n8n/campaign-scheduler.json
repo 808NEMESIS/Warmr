@@ -1,0 +1,146 @@
+{
+  "name": "Warmr — Campaign Scheduler",
+  "nodes": [
+    {
+      "id": "c3d4e5f6-0003-0003-0003-000000000001",
+      "name": "Schedule: Every 5 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "c3d4e5f6-0003-0003-0003-000000000002",
+      "name": "POST /campaigns/process-queue",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WARMR_API_BASE }}/campaigns/process-queue",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.WARMR_API_TOKEN }}" }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "id": "c3d4e5f6-0003-0003-0003-000000000003",
+      "name": "Has pending sends?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 300],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "cond-1",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "c3d4e5f6-0003-0003-0003-000000000004",
+      "name": "Log campaign run",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [960, 200],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "log-1",
+              "name": "ran_at",
+              "value": "={{ new Date().toISOString() }}",
+              "type": "string"
+            },
+            {
+              "id": "log-2",
+              "name": "pending_sends",
+              "value": "={{ $json.pending_sends ?? 0 }}",
+              "type": "number"
+            },
+            {
+              "id": "log-3",
+              "name": "note",
+              "value": "={{ $json.note ?? '' }}",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "c3d4e5f6-0003-0003-0003-000000000005",
+      "name": "Log campaign error",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 420],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/warmup_logs",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ action: 'error', notes: 'n8n campaign-scheduler: ' + ($json.error || JSON.stringify($json)), timestamp: new Date().toISOString() }) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Schedule: Every 5 min": {
+      "main": [
+        [{ "node": "POST /campaigns/process-queue", "type": "main", "index": 0 }]
+      ]
+    },
+    "POST /campaigns/process-queue": {
+      "main": [
+        [{ "node": "Has pending sends?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Has pending sends?": {
+      "main": [
+        [{ "node": "Log campaign run", "type": "main", "index": 0 }],
+        [{ "node": "Log campaign error", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true },
+  "meta": { "templateCredsSetupCompleted": true, "instanceId": "warmr" },
+  "notes": "Picks up pending campaign sends every 5 minutes.\nRespects inbox daily_campaign_target limits.\nMax 1 send per inbox per 3 minutes (enforced in campaign_scheduler.py)."
+}

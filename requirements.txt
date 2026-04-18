@@ -1,0 +1,31 @@
+# Warmr Python dependencies
+# Install with: pip install -r requirements.txt
+# Requires Python 3.11+
+#
+# Note: imaplib, smtplib, email, datetime, random, os, logging, time
+# are all Python standard library modules and do not appear here.
+#
+# Versions pinned to latest stable as of 2026-04. Update with:
+#   pip install --upgrade -r requirements.txt && pip freeze > requirements.lock
+
+# ── Core backend scripts (warmup_engine, imap_processor, etc.) ───────────────
+anthropic==0.52.0          # Anthropic Claude API — warmup email and reply generation
+supabase==2.15.2           # Supabase Python client — all database reads and writes
+python-dotenv==1.1.0       # Loads .env file into os.environ at script startup
+
+# ── FastAPI API layer ─────────────────────────────────────────────────────────
+fastapi==0.115.12          # Web framework for the API middleware layer
+uvicorn[standard]==0.34.2  # ASGI server to run the FastAPI app
+python-jose[cryptography]==3.3.0  # JWT decode/verify for Supabase tokens
+dnspython==2.7.0           # Live DNS record lookups (SPF, DKIM, DMARC, MX)
+httpx==0.28.1              # Async HTTP client (FastAPI test client + outbound requests)
+pandas==2.2.3              # CSV parsing for lead imports
+python-multipart==0.0.20   # Required by FastAPI for file upload (UploadFile) support
+email-validator==2.3.0     # Required by Pydantic EmailStr (used in InboxCreate model)
+slowapi==0.1.9             # Rate limiting middleware for FastAPI (wraps limits library)
+
+# ── Enrichment engine ─────────────────────────────────────────────────────────
+# httpx is already listed above (used by both API layer and enrichment HTTP calls)
+# dnspython is already listed above (MX record verification in Step 1)
+# anthropic is already listed above (opener generation in Step 3)
+# No additional packages required — Hunter.io, Clearbit, Apify all use plain HTTP via httpx

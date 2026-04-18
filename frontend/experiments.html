@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Warmr — Experimenten</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <style>
+    /* ── View toggle ───── */
+    .view { display: none; }
+    .view.active { display: block; }
+
+    /* ── Filter chips ───── */
+    .filter-bar {
+      display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
+      margin-bottom: 1.5rem;
+    }
+    .filter-chip {
+      padding: .35rem .875rem; border-radius: 99px; font-size: .8rem; font-weight: 600;
+      cursor: pointer; border: 1.5px solid var(--border);
+      background: var(--surface); color: var(--muted); transition: all var(--transition);
+    }
+    .filter-chip.active { border-color: var(--primary); background: #ede8ff; color: var(--primary); }
+
+    /* ── Experiment card ── */
+    .exp-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius-card); padding: 1.25rem 1.5rem;
+      margin-bottom: 1rem; box-shadow: var(--shadow-sm);
+      transition: box-shadow var(--transition), border-color var(--transition); cursor: pointer;
+    }
+    .exp-card:hover { box-shadow: var(--shadow-md); border-color: var(--primary-lt); }
+
+    .exp-header {
+      display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem;
+    }
+    .exp-title { font-size: 1rem; font-weight: 700; margin-bottom: .25rem; }
+    .exp-hypothesis {
+      font-size: .8125rem; color: var(--muted); max-width: 580px; line-height: 1.5;
+    }
+
+    .exp-status-badge {
+      padding: .25rem .75rem; border-radius: 99px; font-size: .75rem; font-weight: 700;
+      white-space: nowrap; flex-shrink: 0;
+    }
+    .status-active    { background: #d4f5ed; color: #00856d; }
+    .status-concluded { background: #ede8ff; color: var(--primary); }
+    .status-inconclusive { background: #f5f5f5; color: var(--muted); }
+    .status-cancelled { background: #fde8e4; color: var(--danger); }
+
+    .exp-metrics {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;
+      margin-top: 1.125rem; padding-top: 1.125rem; border-top: 1px solid var(--border);
+    }
+    .exp-metric-block { }
+    .exp-metric-label {
+      font-size: .7rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .04em; color: var(--muted); margin-bottom: .375rem;
+    }
+    .exp-metric-row {
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: .875rem; padding: .25rem 0;
+      border-bottom: 1px solid #f0eeff;
+    }
+    .exp-metric-row:last-child { border-bottom: none; }
+    .winner-badge {
+      background: #d4f5ed; color: #00856d; font-size: .7rem; font-weight: 700;
+      padding: .15rem .45rem; border-radius: 4px;
+    }
+    .loser-badge {
+      background: #fde8e4; color: #c0392b; font-size: .7rem; font-weight: 700;
+      padding: .15rem .45rem; border-radius: 4px;
+    }
+
+    /* Progress bar */
+    .progress-wrap { margin-top: .875rem; }
+    .progress-label { display: flex; justify-content: space-between; font-size: .75rem; color: var(--muted); margin-bottom: .375rem; }
+    .progress-bar { height: 8px; background: #f0eeff; border-radius: 4px; overflow: hidden; }
+    .progress-fill { height: 100%; border-radius: 4px; background: var(--gradient); transition: width .4s; }
+    .progress-fill.complete { background: linear-gradient(90deg,#00b894,#00856d); }
+
+    /* ── New experiment modal ── */
+    #modal-experiment { display: none; }
+
+    /* ── Detail modal (full stats) ── */
+    .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45);
+      z-index: 200; backdrop-filter: blur(2px); align-items: center; justify-content: center; }
+    .modal-overlay.open { display: flex; }
+    .modal-box {
+      background: var(--surface); border-radius: var(--radius-card);
+      width: 100%; max-width: 640px; max-height: 90vh; overflow-y: auto;
+      box-shadow: var(--shadow-xl); animation: slideUp .2s ease;
+    }
+    @keyframes slideUp { from { transform: translateY(20px); opacity:0; } to { transform:none; opacity:1; } }
+    .modal-header {
+      padding: 1.25rem 1.5rem; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0;
+      background: var(--surface);
+    }
+    .modal-body { padding: 1.5rem; }
+
+    .conclude-section {
+      margin-top: 1.25rem; padding: 1.25rem; background: #f8f6ff;
+      border-radius: 10px; border: 1px solid #e0d7ff;
+    }
+    .conclude-title { font-size: .875rem; font-weight: 700; margin-bottom: .875rem; }
+
+    /* ── Empty state ── */
+    .empty-state {
+      text-align: center; padding: 5rem 2rem; color: var(--muted);
+    }
+    .empty-state svg { margin: 0 auto 1rem; opacity: .3; }
+    .empty-state p { font-size: .9375rem; margin-bottom: 1.25rem; }
+
+    /* Skeleton */
+    .skel { height: 120px; border-radius: var(--radius-card); background: #f0f0f5;
+      margin-bottom: 1rem; animation: shimmer 1.4s ease-in-out infinite; }
+    @keyframes shimmer { 0%,100% { opacity:1; } 50% { opacity:.5; } }
+
+    /* Conclude result select */
+    .result-chips { display: flex; gap: .625rem; margin-bottom: 1rem; flex-wrap: wrap; }
+    .result-chip {
+      padding: .4rem .875rem; border-radius: 99px; font-size: .8125rem; font-weight: 600;
+      cursor: pointer; border: 1.5px solid var(--border); background: var(--surface);
+      color: var(--muted); transition: all var(--transition);
+    }
+    .result-chip.selected.control { border-color: var(--primary); background: #ede8ff; color: var(--primary); }
+    .result-chip.selected.variant { border-color: var(--success); background: #d4f5ed; color: var(--success); }
+    .result-chip.selected.inconclusive { border-color: var(--muted); background: #f5f5f5; color: var(--text); }
+  </style>
+</head>
+<body>
+
+<!-- ── Sidebar ──────────────────────────────────────────────────────────── -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-mark">W</div>
+    <span class="logo-text">Warmr</span>
+  </div>
+  <div style="padding:.75rem 0;flex:1">
+    <div class="sidebar-section-label">Overzicht</div>
+    <a class="nav-link" href="dashboard.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+      Dashboard
+    </a>
+    <div class="sidebar-section-label">Campagnes</div>
+    <a class="nav-link" href="campaigns.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 9.8"/></svg>
+      Campagnes
+    </a>
+    <a class="nav-link" href="leads.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+      Leads
+    </a>
+    <div class="sidebar-section-label">Inzichten</div>
+    <a class="nav-link" href="decisions.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      Beslissingen
+    </a>
+    <a class="nav-link active" href="experiments.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/></svg>
+      Experimenten
+    </a>
+    <div class="sidebar-section-label">Infrastructuur</div>
+    <a class="nav-link" href="inboxes.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+      Inboxes
+    </a>
+    <a class="nav-link" href="domains.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/></svg>
+      Domeinen
+    </a>
+    <div class="sidebar-section-label">Account</div>
+    <a class="nav-link" href="settings.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/></svg>
+      Instellingen
+    </a>
+  </div>
+  <div class="sidebar-footer">
+    <div style="display:flex;align-items:center;gap:.75rem">
+      <div class="avatar avatar-sm" id="sidebar-avatar">?</div>
+      <div style="flex:1;min-width:0">
+        <div class="text-sm font-semi truncate" id="sidebar-name">Laden…</div>
+        <div class="text-xs text-muted">Pro plan</div>
+      </div>
+      <button class="btn-icon" onclick="logout()">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      </button>
+    </div>
+  </div>
+</aside>
+
+<!-- ── Topbar ─────────────────────────────────────────────────────────────── -->
+<header class="topbar">
+  <div class="topbar-left">
+    <h1 style="font-size:1.25rem;font-family:var(--font-disp);font-weight:400">Experimenten</h1>
+  </div>
+  <div class="topbar-right">
+    <button class="btn btn-primary" onclick="showNewModal()">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Nieuw experiment
+    </button>
+    <div id="topbar-client" style="display:flex;align-items:center;gap:.625rem;cursor:pointer" onclick="window.location.href='settings.html'">
+      <div class="avatar avatar-sm">?</div>
+      <span class="text-sm font-semi truncate" style="max-width:120px">—</span>
+    </div>
+  </div>
+</header>
+
+<!-- ── Main ───────────────────────────────────────────────────────────────── -->
+<main class="main-content">
+
+  <!-- Stats strip -->
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-bottom:1.75rem">
+    <div class="stat-card">
+      <div class="stat-value" id="val-total">—</div>
+      <div class="stat-label">Totaal</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value text-success" id="val-active">—</div>
+      <div class="stat-label">Actief</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value text-primary" id="val-concluded">—</div>
+      <div class="stat-label">Afgerond</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value text-success" id="val-variant-wins">—</div>
+      <div class="stat-label">Variant wint</div>
+    </div>
+  </div>
+
+  <!-- Filter bar -->
+  <div class="filter-bar">
+    <button class="filter-chip active" onclick="setFilter(this,'all')">Alles</button>
+    <button class="filter-chip" onclick="setFilter(this,'active')">Actief</button>
+    <button class="filter-chip" onclick="setFilter(this,'concluded')">Afgerond</button>
+    <button class="filter-chip" onclick="setFilter(this,'inconclusive')">Inconclusief</button>
+    <button class="filter-chip" onclick="setFilter(this,'cancelled')">Geannuleerd</button>
+  </div>
+
+  <!-- Experiment list -->
+  <div id="experiments-container">
+    <div class="skel"></div><div class="skel"></div>
+  </div>
+
+</main>
+
+<!-- ── New Experiment Modal ───────────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal-experiment">
+  <div class="modal-box">
+    <div class="modal-header">
+      <div style="font-size:1rem;font-weight:700">Nieuw experiment</div>
+      <button class="btn-icon" onclick="closeNewModal()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Naam *</label>
+        <input class="form-input" id="new-name" type="text" placeholder="Bijv. Subjectlijn A vs B">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Hypothese</label>
+        <textarea class="form-input" id="new-hypothesis" rows="2"
+          placeholder="Ik geloof dat X zal resulteren in Y omdat Z…" style="resize:vertical"></textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Controlecampagne (A) *</label>
+        <select class="form-select" id="new-control"></select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Variantcampagne (B) *</label>
+        <select class="form-select" id="new-variant"></select>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+        <div class="form-group">
+          <label class="form-label">Metric</label>
+          <select class="form-select" id="new-metric">
+            <option value="reply_rate">Reply rate</option>
+            <option value="open_rate">Open rate</option>
+            <option value="meeting_rate">Meeting rate</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Min. steekproefgrootte</label>
+          <input class="form-input" id="new-sample" type="number" value="100" min="10" max="5000">
+        </div>
+      </div>
+      <div id="new-error" class="text-danger text-sm" style="display:none;margin-bottom:.75rem"></div>
+      <button class="btn btn-primary" style="width:100%" onclick="createExperiment()">Experiment aanmaken</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Detail / Conclude Modal ───────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal-detail">
+  <div class="modal-box">
+    <div class="modal-header">
+      <div>
+        <div id="detail-status-badge" style="margin-bottom:.375rem"></div>
+        <div id="detail-title" style="font-size:1.0625rem;font-weight:700">—</div>
+      </div>
+      <button class="btn-icon" onclick="closeDetailModal()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body" id="detail-body"><!-- injected --></div>
+  </div>
+</div>
+
+<script>
+// ── Config ────────────────────────────────────────────────────────────────
+const SUPABASE_URL  = 'https://zomdrygdcaenjnrrpcpw.supabase.co';
+const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpvbWRyeWdkY2FlbmpucnJwY3B3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ5NDU1OTIsImV4cCI6MjA5MDUyMTU5Mn0.placeholder';
+const API_BASE      = 'http://localhost:8000';
+
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+let _token = '';
+let _experiments = [];
+let _campaigns = [];
+let _filterStatus = 'all';
+let _detailExpId = null;
+let _concludeResult = null;
+
+// ── Auth ──────────────────────────────────────────────────────────────────
+async function requireAuth() {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) { window.location.href = 'index.html'; return null; }
+  _token = session.access_token;
+  const initials = (session.user.email || '?').charAt(0).toUpperCase();
+  document.querySelectorAll('.avatar').forEach(el => el.textContent = initials);
+  document.getElementById('sidebar-name').textContent = session.user.email || '—';
+  return session;
+}
+async function logout() { await sb.auth.signOut(); window.location.href = 'index.html'; }
+function apiHeaders() { return { 'Authorization': `Bearer ${_token}`, 'Content-Type': 'application/json' }; }
+async function apiFetch(path, opts = {}) {
+  const r = await fetch(API_BASE + path, { ...opts, headers: { ...apiHeaders(), ...(opts.headers||{}) } });
+  if (!r.ok) { const err = await r.json().catch(() => ({})); throw new Error(err.detail || `${r.status}`); }
+  return r.json();
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+function statusLabel(s) {
+  return { active:'Actief', concluded:'Afgerond', inconclusive:'Inconclusief', cancelled:'Geannuleerd' }[s] || s;
+}
+function statusClass(s) {
+  return { active:'status-active', concluded:'status-concluded', inconclusive:'status-inconclusive', cancelled:'status-cancelled' }[s] || '';
+}
+function fmtRate(v) { return (v * 100).toFixed(1) + '%'; }
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('nl-NL', { day:'numeric', month:'short', year:'numeric' });
+}
+
+// ── Filter ────────────────────────────────────────────────────────────────
+function setFilter(el, status) {
+  _filterStatus = status;
+  document.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  renderExperiments();
+}
+
+// ── Render ────────────────────────────────────────────────────────────────
+function renderExperiments() {
+  const filtered = _filterStatus === 'all'
+    ? _experiments
+    : _experiments.filter(e => e.status === _filterStatus);
+
+  // Stats
+  document.getElementById('val-total').textContent = _experiments.length;
+  document.getElementById('val-active').textContent = _experiments.filter(e => e.status === 'active').length;
+  document.getElementById('val-concluded').textContent = _experiments.filter(e => e.status === 'concluded').length;
+  document.getElementById('val-variant-wins').textContent = _experiments.filter(e => e.result === 'variant_wins').length;
+
+  const container = document.getElementById('experiments-container');
+  if (!filtered.length) {
+    container.innerHTML = `<div class="empty-state">
+      <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18"/></svg>
+      <p>Geen experimenten${_filterStatus !== 'all' ? ' met status "' + statusLabel(_filterStatus) + '"' : ''}.</p>
+      <button class="btn btn-primary" onclick="showNewModal()">Eerste experiment aanmaken</button>
+    </div>`;
+    return;
+  }
+
+  container.innerHTML = filtered.map(exp => {
+    const lr = exp.live_results || {};
+    const ctrl  = lr.control  || {};
+    const vari  = lr.variant  || {};
+    const metric = exp.metric || 'reply_rate';
+    const ctrlRate = ctrl[metric] ?? ctrl.reply_rate ?? 0;
+    const variRate = vari[metric] ?? vari.reply_rate ?? 0;
+    const pw = exp.preliminary_winner;
+    const pct = Math.min(100, Math.round(
+      Math.max(ctrl.sent || 0, vari.sent || 0) / (exp.min_sample_size || 100) * 100
+    ));
+
+    return `<div class="exp-card" onclick="openDetail('${exp.id}')">
+      <div class="exp-header">
+        <div>
+          <div class="exp-title">${exp.name}</div>
+          ${exp.hypothesis ? `<div class="exp-hypothesis">${exp.hypothesis}</div>` : ''}
+        </div>
+        <span class="exp-status-badge ${statusClass(exp.status)}">${statusLabel(exp.status)}</span>
+      </div>
+
+      <div class="exp-metrics">
+        <div class="exp-metric-block">
+          <div class="exp-metric-label">Controle (A)</div>
+          <div class="exp-metric-row">
+            <span>Verzonden</span><span>${ctrl.sent ?? '—'}</span>
+          </div>
+          <div class="exp-metric-row">
+            <span>${metric.replace(/_/g,' ')}</span>
+            <span style="font-weight:700${pw === 'control' ? ';color:var(--success)' : ''}">
+              ${ctrl.sent ? fmtRate(ctrlRate) : '—'}
+              ${pw === 'control' ? '<span class="winner-badge" style="margin-left:.5rem">Winnaar</span>' : ''}
+            </span>
+          </div>
+        </div>
+
+        <div class="exp-metric-block">
+          <div class="exp-metric-label">Variant (B)</div>
+          <div class="exp-metric-row">
+            <span>Verzonden</span><span>${vari.sent ?? '—'}</span>
+          </div>
+          <div class="exp-metric-row">
+            <span>${metric.replace(/_/g,' ')}</span>
+            <span style="font-weight:700${pw === 'variant' ? ';color:var(--success)' : ''}">
+              ${vari.sent ? fmtRate(variRate) : '—'}
+              ${pw === 'variant' ? '<span class="winner-badge" style="margin-left:.5rem">Winnaar</span>' : ''}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      ${exp.status === 'active' ? `
+      <div class="progress-wrap">
+        <div class="progress-label"><span>Voortgang</span><span>${pct}% van ${exp.min_sample_size || 100} verzendingen</span></div>
+        <div class="progress-bar"><div class="progress-fill ${pct >= 100 ? 'complete' : ''}" style="width:${pct}%"></div></div>
+      </div>` : ''}
+
+      ${exp.result_summary ? `<div style="margin-top:.875rem;padding:.75rem 1rem;background:#f8f6ff;border-radius:8px;font-size:.8125rem;color:var(--text);border-left:3px solid var(--primary)">
+        ${exp.result_summary}
+      </div>` : ''}
+
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:.875rem">
+        <span class="text-xs text-muted">Gestart ${fmtDate(exp.started_at)}</span>
+        <span class="text-xs text-muted">${exp.metric || 'reply_rate'}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── Load experiments ──────────────────────────────────────────────────────
+async function loadExperiments() {
+  try {
+    // Load with live stats from detail endpoint
+    const list = await apiFetch('/experiments');
+    // Enrich with live_results
+    _experiments = await Promise.all(list.map(async exp => {
+      try {
+        return await apiFetch(`/experiments/${exp.id}`);
+      } catch {
+        return exp;
+      }
+    }));
+    renderExperiments();
+  } catch (e) {
+    document.getElementById('experiments-container').innerHTML =
+      `<div class="empty-state"><p>Fout bij laden: ${e.message}</p></div>`;
+  }
+}
+
+async function loadCampaigns() {
+  try {
+    _campaigns = await apiFetch('/campaigns');
+    const opts = _campaigns.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+    document.getElementById('new-control').innerHTML = '<option value="">— Selecteer —</option>' + opts;
+    document.getElementById('new-variant').innerHTML = '<option value="">— Selecteer —</option>' + opts;
+  } catch {}
+}
+
+// ── New modal ─────────────────────────────────────────────────────────────
+function showNewModal() { document.getElementById('modal-experiment').classList.add('open'); }
+function closeNewModal() { document.getElementById('modal-experiment').classList.remove('open'); }
+
+async function createExperiment() {
+  const name     = document.getElementById('new-name').value.trim();
+  const hyp      = document.getElementById('new-hypothesis').value.trim();
+  const control  = document.getElementById('new-control').value;
+  const variant  = document.getElementById('new-variant').value;
+  const metric   = document.getElementById('new-metric').value;
+  const sample   = parseInt(document.getElementById('new-sample').value) || 100;
+  const errEl    = document.getElementById('new-error');
+
+  errEl.style.display = 'none';
+  if (!name || !control || !variant) {
+    errEl.textContent = 'Vul alle verplichte velden in.'; errEl.style.display = 'block'; return;
+  }
+  if (control === variant) {
+    errEl.textContent = 'Controle en variant mogen niet dezelfde campagne zijn.'; errEl.style.display = 'block'; return;
+  }
+
+  try {
+    const exp = await apiFetch('/experiments', {
+      method: 'POST',
+      body: JSON.stringify({ name, hypothesis: hyp||undefined, control_campaign_id: control,
+        variant_campaign_id: variant, metric, min_sample_size: sample }),
+    });
+    closeNewModal();
+    // Reset form
+    ['new-name','new-hypothesis'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('new-sample').value = '100';
+    await loadExperiments();
+  } catch (e) {
+    errEl.textContent = 'Fout: ' + e.message; errEl.style.display = 'block';
+  }
+}
+
+// ── Detail modal ──────────────────────────────────────────────────────────
+async function openDetail(expId) {
+  _detailExpId = expId;
+  _concludeResult = null;
+  try {
+    const exp = await apiFetch(`/experiments/${expId}`);
+    // Update local cache
+    const idx = _experiments.findIndex(e => e.id === expId);
+    if (idx !== -1) _experiments[idx] = exp;
+
+    document.getElementById('detail-title').textContent = exp.name;
+    document.getElementById('detail-status-badge').innerHTML =
+      `<span class="exp-status-badge ${statusClass(exp.status)}">${statusLabel(exp.status)}</span>`;
+
+    const lr  = exp.live_results || {};
+    const ctrl = lr.control || {};
+    const vari = lr.variant || {};
+    const metric = exp.metric || 'reply_rate';
+    const pw = exp.preliminary_winner;
+
+    const concludeSection = exp.status === 'active' ? `
+    <div class="conclude-section">
+      <div class="conclude-title">Experiment afronden</div>
+      <div class="result-chips">
+        <div class="result-chip control" data-result="control_wins" onclick="selectResult(this,'control_wins')">Controle wint</div>
+        <div class="result-chip variant" data-result="variant_wins" onclick="selectResult(this,'variant_wins')">Variant wint</div>
+        <div class="result-chip inconclusive" data-result="inconclusive" onclick="selectResult(this,'inconclusive')">Inconclusief</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Samenvatting (optioneel)</label>
+        <textarea class="form-input" id="conclude-summary" rows="2" placeholder="Wat leer je hieruit?"></textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Learnings</label>
+        <textarea class="form-input" id="conclude-learnings" rows="2" placeholder="Wat doe je de volgende keer anders?"></textarea>
+      </div>
+      <div id="conclude-error" class="text-danger text-sm" style="display:none;margin-bottom:.75rem"></div>
+      <button class="btn btn-primary" style="width:100%" onclick="concludeExperiment()">Experiment afsluiten</button>
+    </div>` : `${exp.result_summary ? `<div style="padding:1rem;background:#f8f6ff;border-radius:10px;border-left:3px solid var(--primary);font-size:.875rem;margin-bottom:1rem">${exp.result_summary}</div>` : ''}
+    ${exp.learnings ? `<div style="padding:1rem;background:#f0faf6;border-radius:10px;border-left:3px solid var(--success);font-size:.875rem"><strong>Learnings:</strong> ${exp.learnings}</div>` : ''}`;
+
+    document.getElementById('detail-body').innerHTML = `
+      ${exp.hypothesis ? `<p style="font-size:.875rem;color:var(--muted);margin-bottom:1.25rem;padding:.75rem 1rem;background:#fafafa;border-radius:8px;border-left:3px solid var(--border)">${exp.hypothesis}</p>` : ''}
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.25rem">
+        <div style="padding:1rem;background:#f8f6ff;border-radius:10px">
+          <div class="exp-metric-label" style="margin-bottom:.625rem">Controle (A)</div>
+          <div class="exp-metric-row"><span>Verzonden</span><span>${ctrl.sent ?? '—'}</span></div>
+          <div class="exp-metric-row"><span>Replies</span><span>${ctrl.replied ?? '—'}</span></div>
+          <div class="exp-metric-row">
+            <span>${metric.replace(/_/g,' ')}</span>
+            <span style="font-weight:700;color:${pw==='control'?'var(--success)':'inherit'}">${ctrl.sent ? fmtRate(ctrl[metric] ?? 0) : '—'}
+              ${pw==='control'?'<span class="winner-badge" style="margin-left:.375rem">Winnaar</span>':''}
+            </span>
+          </div>
+          <div class="exp-metric-row"><span>Bounce rate</span><span>${ctrl.sent ? fmtRate(ctrl.bounce_rate ?? 0) : '—'}</span></div>
+        </div>
+        <div style="padding:1rem;background:#f0faf6;border-radius:10px">
+          <div class="exp-metric-label" style="margin-bottom:.625rem">Variant (B)</div>
+          <div class="exp-metric-row"><span>Verzonden</span><span>${vari.sent ?? '—'}</span></div>
+          <div class="exp-metric-row"><span>Replies</span><span>${vari.replied ?? '—'}</span></div>
+          <div class="exp-metric-row">
+            <span>${metric.replace(/_/g,' ')}</span>
+            <span style="font-weight:700;color:${pw==='variant'?'var(--success)':'inherit'}">${vari.sent ? fmtRate(vari[metric] ?? 0) : '—'}
+              ${pw==='variant'?'<span class="winner-badge" style="margin-left:.375rem">Winnaar</span>':''}
+            </span>
+          </div>
+          <div class="exp-metric-row"><span>Bounce rate</span><span>${vari.sent ? fmtRate(vari.bounce_rate ?? 0) : '—'}</span></div>
+        </div>
+      </div>
+
+      ${pw ? `<div style="padding:.875rem 1rem;background:#d4f5ed;border-radius:8px;font-size:.875rem;color:#00856d;font-weight:600;margin-bottom:1rem">
+        🏆 Voorlopige winnaar: <strong>${pw === 'variant' ? 'Variant (B)' : 'Controle (A)'}</strong> — verschil is &gt;5pp bij voldoende steekproef.
+      </div>` : ''}
+
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:.75rem;margin-bottom:1.25rem">
+        <div style="text-align:center;padding:.75rem;background:#fafafa;border-radius:8px">
+          <div style="font-size:1.25rem;font-weight:800;color:var(--primary)">${exp.min_sample_size || 100}</div>
+          <div style="font-size:.7rem;color:var(--muted)">Min. steekproef</div>
+        </div>
+        <div style="text-align:center;padding:.75rem;background:#fafafa;border-radius:8px">
+          <div style="font-size:1.25rem;font-weight:800;color:var(--text)">${fmtDate(exp.started_at)}</div>
+          <div style="font-size:.7rem;color:var(--muted)">Gestart</div>
+        </div>
+        <div style="text-align:center;padding:.75rem;background:#fafafa;border-radius:8px">
+          <div style="font-size:1.25rem;font-weight:800;color:var(--text)">${exp.concluded_at ? fmtDate(exp.concluded_at) : '—'}</div>
+          <div style="font-size:.7rem;color:var(--muted)">Afgerond</div>
+        </div>
+      </div>
+
+      ${concludeSection}
+    `;
+
+    document.getElementById('modal-detail').classList.add('open');
+  } catch (e) {
+    alert('Fout bij laden: ' + e.message);
+  }
+}
+
+function closeDetailModal() { document.getElementById('modal-detail').classList.remove('open'); }
+
+function selectResult(el, result) {
+  _concludeResult = result;
+  document.querySelectorAll('.result-chip').forEach(c => c.classList.remove('selected'));
+  el.classList.add('selected');
+}
+
+async function concludeExperiment() {
+  if (!_concludeResult) {
+    document.getElementById('conclude-error').textContent = 'Selecteer een resultaat.';
+    document.getElementById('conclude-error').style.display = 'block';
+    return;
+  }
+  const summary   = document.getElementById('conclude-summary')?.value?.trim();
+  const learnings = document.getElementById('conclude-learnings')?.value?.trim();
+  try {
+    await apiFetch(`/experiments/${_detailExpId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        status: 'concluded',
+        result: _concludeResult,
+        result_summary: summary || undefined,
+        learnings: learnings || undefined,
+      }),
+    });
+    closeDetailModal();
+    await loadExperiments();
+  } catch (e) {
+    document.getElementById('conclude-error').textContent = 'Fout: ' + e.message;
+    document.getElementById('conclude-error').style.display = 'block';
+  }
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────
+(async () => {
+  await requireAuth();
+  await Promise.all([loadExperiments(), loadCampaigns()]);
+})();
+</script>
+</body>
+</html>

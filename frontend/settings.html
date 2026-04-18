@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Warmr — Instellingen</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <style>
+    .settings-tabs {
+      display: flex; gap: .375rem; margin-bottom: 1.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .settings-tab {
+      padding: .75rem 1.125rem;
+      cursor: pointer;
+      font-size: .875rem;
+      font-weight: 500;
+      color: var(--muted);
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      transition: all var(--transition);
+    }
+    .settings-tab:hover { color: var(--text); }
+    .settings-tab.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+    .settings-pane { display: none; }
+    .settings-pane.active { display: block; }
+
+    .form-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    .var-pill {
+      display: inline-block; font-family: monospace; font-size: .75rem;
+      padding: .15rem .45rem; background: #f4f1ff; color: var(--primary);
+      border-radius: 4px; margin-right: .25rem; cursor: pointer;
+    }
+    .var-pill:hover { background: #ede8ff; }
+
+    .integration-card {
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius-card);
+      padding: 1.25rem;
+      display: flex;
+      align-items: flex-start;
+      gap: 1rem;
+      transition: all var(--transition);
+    }
+    .integration-card:hover { border-color: var(--primary); }
+    .integration-icon {
+      width: 44px; height: 44px; border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: .875rem; color: #fff; flex-shrink: 0;
+    }
+    .icon-hubspot { background: linear-gradient(135deg, #ff7a59, #ff5722); }
+    .icon-pipedrive { background: linear-gradient(135deg, #26292c, #585c61); }
+    .icon-webhook { background: linear-gradient(135deg, #6c5ce7, #a29bfe); }
+    .icon-salesforce { background: linear-gradient(135deg, #00a1e0, #0070d2); }
+
+    .integration-status {
+      display: inline-flex; align-items: center; gap: .35rem;
+      font-size: .75rem; font-weight: 600;
+      padding: .2rem .55rem; border-radius: 99px;
+    }
+    .status-active { background: #d1fae5; color: #065f46; }
+    .status-inactive { background: #f3f4f6; color: #6b7280; }
+
+    .sync-toggle-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: .65rem 0; border-bottom: 1px solid var(--border);
+    }
+    .sync-toggle-row:last-child { border-bottom: none; }
+    .toggle-switch {
+      position: relative; width: 36px; height: 20px;
+      background: #ccc; border-radius: 99px; cursor: pointer;
+      transition: background .2s;
+    }
+    .toggle-switch.on { background: var(--primary); }
+    .toggle-switch::after {
+      content: ''; position: absolute; top: 2px; left: 2px;
+      width: 16px; height: 16px; background: #fff; border-radius: 50%;
+      transition: left .2s;
+    }
+    .toggle-switch.on::after { left: 18px; }
+
+    .sync-log-table { width: 100%; border-collapse: collapse; }
+    .sync-log-table th, .sync-log-table td {
+      padding: .65rem 1rem; text-align: left; font-size: .8125rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .sync-log-table th { font-size: .7rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  </style>
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-mark">W</div>
+    <span class="logo-text">Warmr</span>
+  </div>
+  <div style="padding:.75rem 0;flex:1">
+    <div class="sidebar-section-label">Overzicht</div>
+    <a class="nav-link" href="dashboard.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+      Dashboard
+    </a>
+    <div class="sidebar-section-label">Campagnes</div>
+    <a class="nav-link" href="campaigns.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 9.8 19.79 19.79 0 0112 4.18a2 2 0 012 2V8l2 1.5"/></svg>
+      Campagnes
+    </a>
+    <a class="nav-link" href="unified-inbox.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+      Unified Inbox
+    </a>
+    <div class="sidebar-section-label">Infrastructuur</div>
+    <a class="nav-link" href="inboxes.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+      Inboxes
+    </a>
+    <a class="nav-link" href="domains.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/></svg>
+      Domeinen
+    </a>
+    <div class="sidebar-section-label">Account</div>
+    <a class="nav-link active" href="settings.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/></svg>
+      Instellingen
+    </a>
+  </div>
+  <div class="sidebar-footer">
+    <div style="display:flex;align-items:center;gap:.75rem">
+      <div class="avatar avatar-sm" id="sidebar-avatar">?</div>
+      <div style="flex:1;min-width:0">
+        <div class="text-sm font-semi truncate" id="sidebar-name">Laden…</div>
+        <div class="text-xs text-muted">Pro plan</div>
+      </div>
+      <button class="btn-icon" onclick="logout()" title="Uitloggen">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      </button>
+    </div>
+  </div>
+</aside>
+
+<header class="topbar">
+  <div class="topbar-left">
+    <h1 style="font-size:1.25rem;font-family:var(--font-disp);font-weight:400">Instellingen</h1>
+  </div>
+  <div class="topbar-right">
+    <div id="topbar-client" style="display:flex;align-items:center;gap:.625rem;cursor:pointer">
+      <div class="avatar avatar-sm">?</div>
+      <span class="text-sm font-semi client-name" style="max-width:120px">—</span>
+    </div>
+  </div>
+</header>
+
+<div class="main-layout">
+  <div class="main-content">
+    <div class="page" style="max-width:880px">
+
+      <div class="settings-tabs">
+        <div class="settings-tab active" data-tab="profile" onclick="switchTab('profile')">Profiel &amp; boeking</div>
+        <div class="settings-tab" data-tab="crm" onclick="switchTab('crm')">CRM integraties</div>
+        <div class="settings-tab" data-tab="sync-log" onclick="switchTab('sync-log')">Sync log</div>
+      </div>
+
+      <!-- ── Profile Tab ──────────────────────────────────── -->
+      <div class="settings-pane active" id="pane-profile">
+        <div class="card">
+          <div class="card-body">
+            <h3 style="font-family:var(--font-disp);font-size:1.125rem;margin-bottom:.5rem">Verzendprofiel</h3>
+            <p class="text-sm text-muted" style="margin-bottom:1.5rem">Deze waarden worden gebruikt in alle uitgaande e-mails via variabelen.</p>
+
+            <div class="form-row-2">
+              <div class="form-group">
+                <label class="form-label">Afzendernaam</label>
+                <input id="set-sender-name" type="text" class="form-input" placeholder="Jouw naam">
+                <span class="form-hint">Variabele: <span class="var-pill" onclick="copyToClipboard('{{sender_name}}','Variabele')">{{sender_name}}</span></span>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Bedrijfsnaam</label>
+                <input id="set-company" type="text" class="form-input" placeholder="Jouw bedrijfsnaam">
+                <span class="form-hint">Variabele: <span class="var-pill" onclick="copyToClipboard('{{sender_company}}','Variabele')">{{sender_company}}</span></span>
+              </div>
+            </div>
+
+            <div class="form-group" style="margin-top:1rem">
+              <label class="form-label">Boeking link (Cal.com / Calendly)</label>
+              <input id="set-booking" type="url" class="form-input" placeholder="https://cal.com/jouw-naam/15min">
+              <span class="form-hint">Variabele: <span class="var-pill" onclick="copyToClipboard('{{calendar_link}}','Variabele')">{{calendar_link}}</span> of <span class="var-pill" onclick="copyToClipboard('{{booking_url}}','Variabele')">{{booking_url}}</span></span>
+            </div>
+
+            <div class="form-group" style="margin-top:1rem">
+              <label class="form-label">Reply-to e-mail (optioneel)</label>
+              <input id="set-replyto" type="email" class="form-input" placeholder="laat leeg om afzender als reply-to te gebruiken">
+            </div>
+
+            <div class="form-group" style="margin-top:1rem">
+              <label class="form-label">E-mail handtekening</label>
+              <textarea id="set-signature" class="form-input" rows="5" placeholder="Met vriendelijke groet,&#10;Jouw naam&#10;Jouw bedrijf | https://jouwwebsite.nl"></textarea>
+              <span class="form-hint">Variabele: <span class="var-pill" onclick="copyToClipboard('{{signature}}','Variabele')">{{signature}}</span></span>
+            </div>
+
+            <div class="form-group" style="margin-top:1rem">
+              <label class="form-label">Uitschrijftekst (footer)</label>
+              <input id="set-unsub-text" type="text" class="form-input" placeholder="Niet meer ontvangen? Uitschrijven">
+            </div>
+          </div>
+          <div class="card-footer" style="text-align:right">
+            <button id="btn-save-profile" class="btn btn-primary" onclick="saveProfile()">Opslaan</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── CRM Tab ──────────────────────────────────────── -->
+      <div class="settings-pane" id="pane-crm">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+          <div>
+            <h3 style="font-family:var(--font-disp);font-size:1.125rem">CRM integraties</h3>
+            <p class="text-sm text-muted">Stuur replies en interesse-events naar je CRM.</p>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="openCrmModal()">+ Integratie toevoegen</button>
+        </div>
+
+        <div id="crm-list" style="display:flex;flex-direction:column;gap:.875rem">
+          <div style="color:var(--muted);text-align:center;padding:2rem">Laden…</div>
+        </div>
+      </div>
+
+      <!-- ── Sync Log Tab ─────────────────────────────────── -->
+      <div class="settings-pane" id="pane-sync-log">
+        <div class="card" style="padding:0;overflow:hidden">
+          <table class="sync-log-table">
+            <thead>
+              <tr>
+                <th>Tijd</th>
+                <th>Event</th>
+                <th>Status</th>
+                <th>Response</th>
+              </tr>
+            </thead>
+            <tbody id="sync-log-tbody">
+              <tr><td colspan="4" style="text-align:center;color:var(--muted);padding:2rem">Laden…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ── CRM Modal ────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal-crm" style="display:none" onclick="if(event.target===this)closeCrmModal()">
+  <div class="modal" style="max-width:520px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
+      <h3 style="font-family:var(--font-disp);font-size:1.25rem" id="crm-modal-title">CRM integratie toevoegen</h3>
+      <button class="btn-icon" onclick="closeCrmModal()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Provider *</label>
+      <select id="crm-provider" class="form-select" onchange="updateCrmFields()">
+        <option value="hubspot">HubSpot</option>
+        <option value="pipedrive">Pipedrive</option>
+        <option value="webhook">Generic Webhook</option>
+        <option value="salesforce">Salesforce (binnenkort)</option>
+      </select>
+    </div>
+
+    <div class="form-group" id="field-api-key">
+      <label class="form-label">API Key *</label>
+      <input id="crm-api-key" type="password" class="form-input" placeholder="API key van je CRM">
+      <span class="form-hint" id="crm-help">HubSpot: Settings → Integrations → Private Apps → Create</span>
+    </div>
+
+    <div class="form-group" id="field-webhook-url" style="display:none">
+      <label class="form-label">Webhook URL *</label>
+      <input id="crm-webhook-url" type="url" class="form-input" placeholder="https://your-endpoint.com/webhook">
+    </div>
+
+    <div class="form-group" id="field-pipedrive-domain" style="display:none">
+      <label class="form-label">Pipedrive subdomain</label>
+      <input id="crm-pd-domain" type="text" class="form-input" placeholder="bijv. mycompany (van mycompany.pipedrive.com)">
+    </div>
+
+    <div style="background:#f8f7ff;border-radius:8px;padding:1rem;margin-top:1rem">
+      <div class="text-sm font-semi" style="margin-bottom:.5rem">Wanneer syncen?</div>
+      <div class="sync-toggle-row">
+        <span class="text-sm">Bij elke reply</span>
+        <div class="toggle-switch on" id="t-reply" onclick="toggleSwitch(this)"></div>
+      </div>
+      <div class="sync-toggle-row">
+        <span class="text-sm">Bij interesse</span>
+        <div class="toggle-switch on" id="t-interested" onclick="toggleSwitch(this)"></div>
+      </div>
+      <div class="sync-toggle-row">
+        <span class="text-sm">Bij meeting boeking</span>
+        <div class="toggle-switch on" id="t-meeting" onclick="toggleSwitch(this)"></div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:.75rem;margin-top:1.5rem">
+      <button class="btn btn-ghost" onclick="closeCrmModal()">Annuleren</button>
+      <button class="btn btn-secondary" onclick="testCrmConfig()" id="btn-test" style="display:none">Test</button>
+      <button class="btn btn-primary" style="flex:1" id="btn-save-crm" onclick="saveCrmConfig()">Opslaan</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+<script>
+  var _editingCrmId = null;
+  var _crmList = [];
+
+  (async function() {
+    try {
+      await requireAuth();
+      await populateTopbar();
+      await loadProfile();
+      await loadCrm();
+    } catch (e) { console.error(e); }
+  })();
+
+  function switchTab(tab) {
+    document.querySelectorAll('.settings-tab').forEach(function(t) { t.classList.toggle('active', t.dataset.tab === tab); });
+    document.querySelectorAll('.settings-pane').forEach(function(p) { p.classList.toggle('active', p.id === 'pane-' + tab); });
+    if (tab === 'sync-log') loadSyncLog();
+  }
+
+  // ── Profile ──────────────────────────────────────────────────────────────
+  async function loadProfile() {
+    try {
+      var s = await api('/settings');
+      document.getElementById('set-sender-name').value = s.sender_name || '';
+      document.getElementById('set-company').value = s.company_name || '';
+      document.getElementById('set-booking').value = s.booking_url || '';
+      document.getElementById('set-replyto').value = s.reply_to_email || '';
+      document.getElementById('set-signature').value = s.email_signature || '';
+      document.getElementById('set-unsub-text').value = s.unsubscribe_text || 'Niet meer ontvangen? Uitschrijven';
+    } catch (e) { toast('Kon instellingen niet laden: ' + e.message, 'error'); }
+  }
+
+  async function saveProfile() {
+    var btn = document.getElementById('btn-save-profile');
+    setLoading(btn, true, 'Opslaan…');
+    try {
+      await api('/settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          sender_name:      document.getElementById('set-sender-name').value.trim() || null,
+          company_name:     document.getElementById('set-company').value.trim() || null,
+          booking_url:      document.getElementById('set-booking').value.trim() || null,
+          reply_to_email:   document.getElementById('set-replyto').value.trim() || null,
+          email_signature:  document.getElementById('set-signature').value.trim() || null,
+          unsubscribe_text: document.getElementById('set-unsub-text').value.trim() || null,
+        }),
+      });
+      toast('Opgeslagen', 'success');
+    } catch (e) { toast('Fout bij opslaan: ' + e.message, 'error'); }
+    finally { setLoading(btn, false, 'Opslaan'); }
+  }
+
+  // ── CRM ──────────────────────────────────────────────────────────────────
+  async function loadCrm() {
+    try {
+      _crmList = await api('/crm/integrations') || [];
+      renderCrm();
+    } catch (e) { toast('Kon CRM integraties niet laden: ' + e.message, 'error'); }
+  }
+
+  function renderCrm() {
+    var list = document.getElementById('crm-list');
+    if (_crmList.length === 0) {
+      list.innerHTML = '<div class="empty-state" style="background:var(--surface);border:1.5px dashed var(--border);border-radius:12px;padding:2rem">' +
+        '<div class="empty-state-icon">🔌</div>' +
+        '<div class="empty-state-title">Nog geen CRM gekoppeld</div>' +
+        '<div class="empty-state-sub">Voeg een CRM toe om replies automatisch te syncen.</div></div>';
+      return;
+    }
+    list.innerHTML = _crmList.map(function(c) {
+      var statusClass = c.active ? 'status-active' : 'status-inactive';
+      var statusText = c.active ? 'Actief' : 'Uit';
+      var providerLabel = { hubspot: 'HubSpot', pipedrive: 'Pipedrive', webhook: 'Webhook', salesforce: 'Salesforce' }[c.provider] || c.provider;
+      var syncBits = [];
+      if (c.sync_on_reply) syncBits.push('Replies');
+      if (c.sync_on_interested) syncBits.push('Interesse');
+      if (c.sync_on_meeting) syncBits.push('Meetings');
+      return '<div class="integration-card">' +
+        '<div class="integration-icon icon-' + c.provider + '">' + c.provider.charAt(0).toUpperCase() + '</div>' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.25rem">' +
+            '<span style="font-weight:600">' + providerLabel + '</span>' +
+            '<span class="integration-status ' + statusClass + '">' + statusText + '</span>' +
+          '</div>' +
+          '<div class="text-sm text-muted" style="margin-bottom:.5rem">' +
+            (c.api_key ? 'Key: ' + c.api_key : (c.webhook_url || 'Geen credentials')) +
+          '</div>' +
+          '<div class="text-xs text-muted">Sync: ' + (syncBits.join(' · ') || 'Geen events') + '</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:.4rem">' +
+          '<button class="btn btn-ghost btn-sm" onclick="testIntegration(\'' + c.id + '\')">Test</button>' +
+          '<button class="btn btn-ghost btn-sm" onclick="toggleActive(\'' + c.id + '\',' + !c.active + ')">' + (c.active ? 'Uit' : 'Aan') + '</button>' +
+          '<button class="btn-icon" onclick="deleteIntegration(\'' + c.id + '\')" title="Verwijderen">' +
+            '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6"/></svg>' +
+          '</button>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  function openCrmModal() {
+    _editingCrmId = null;
+    document.getElementById('crm-modal-title').textContent = 'CRM integratie toevoegen';
+    document.getElementById('crm-provider').value = 'hubspot';
+    document.getElementById('crm-api-key').value = '';
+    document.getElementById('crm-webhook-url').value = '';
+    document.getElementById('crm-pd-domain').value = '';
+    document.getElementById('btn-test').style.display = 'none';
+    ['t-reply','t-interested','t-meeting'].forEach(function(id) { document.getElementById(id).classList.add('on'); });
+    updateCrmFields();
+    document.getElementById('modal-crm').style.display = 'flex';
+  }
+
+  function closeCrmModal() { document.getElementById('modal-crm').style.display = 'none'; }
+
+  function updateCrmFields() {
+    var p = document.getElementById('crm-provider').value;
+    var hints = {
+      hubspot:    'HubSpot: Settings → Integrations → Private Apps → Create app → kopieer access token',
+      pipedrive:  'Pipedrive: Settings → Personal preferences → API → kopieer API token',
+      webhook:    'Stuur naar elke URL die JSON kan ontvangen (Make, Zapier, eigen endpoint)',
+      salesforce: 'Salesforce integratie komt binnenkort beschikbaar.',
+    };
+    document.getElementById('crm-help').textContent = hints[p] || '';
+    document.getElementById('field-api-key').style.display = p === 'webhook' ? 'none' : 'block';
+    document.getElementById('field-webhook-url').style.display = p === 'webhook' ? 'block' : 'none';
+    document.getElementById('field-pipedrive-domain').style.display = p === 'pipedrive' ? 'block' : 'none';
+  }
+
+  function toggleSwitch(el) { el.classList.toggle('on'); }
+
+  function buildCrmPayload() {
+    var p = document.getElementById('crm-provider').value;
+    return {
+      provider: p,
+      api_key: p === 'webhook' ? null : document.getElementById('crm-api-key').value.trim() || null,
+      webhook_url: p === 'webhook' ? document.getElementById('crm-webhook-url').value.trim() || null : null,
+      config: p === 'pipedrive' ? { company_domain: document.getElementById('crm-pd-domain').value.trim() } : {},
+      sync_on_reply: document.getElementById('t-reply').classList.contains('on'),
+      sync_on_interested: document.getElementById('t-interested').classList.contains('on'),
+      sync_on_meeting: document.getElementById('t-meeting').classList.contains('on'),
+      active: true,
+    };
+  }
+
+  async function saveCrmConfig() {
+    var btn = document.getElementById('btn-save-crm');
+    var payload = buildCrmPayload();
+    if (payload.provider === 'salesforce') { toast('Salesforce komt binnenkort.', 'info'); return; }
+    setLoading(btn, true, 'Opslaan…');
+    try {
+      await api('/crm/integrations', { method: 'POST', body: JSON.stringify(payload) });
+      toast('Integratie toegevoegd', 'success');
+      closeCrmModal();
+      loadCrm();
+    } catch (e) { toast(e.message, 'error'); }
+    finally { setLoading(btn, false, 'Opslaan'); }
+  }
+
+  async function testIntegration(id) {
+    toast('Test event sturen…', 'info', 2000);
+    try {
+      var res = await api('/crm/test/' + id, { method: 'POST' });
+      toast(res.status === 'success' ? 'Test geslaagd: ' + res.response : 'Test mislukt: ' + res.response,
+        res.status === 'success' ? 'success' : 'error', 6000);
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function toggleActive(id, newState) {
+    try {
+      await api('/crm/integrations/' + id, { method: 'PATCH', body: JSON.stringify({ active: newState }) });
+      loadCrm();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function deleteIntegration(id) {
+    if (!confirm('Deze integratie verwijderen?')) return;
+    try {
+      await api('/crm/integrations/' + id, { method: 'DELETE' });
+      toast('Verwijderd', 'success');
+      loadCrm();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  // ── Sync Log ─────────────────────────────────────────────────────────────
+  async function loadSyncLog() {
+    try {
+      var logs = await api('/crm/sync-log?limit=100') || [];
+      var tbody = document.getElementById('sync-log-tbody');
+      if (logs.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:2rem">Nog geen sync events</td></tr>';
+        return;
+      }
+      tbody.innerHTML = logs.map(function(l) {
+        var statusBadge = l.status === 'success'
+          ? '<span class="badge badge-success">success</span>'
+          : '<span class="badge badge-danger">failed</span>';
+        return '<tr>' +
+          '<td style="color:var(--muted);font-size:.8rem">' + timeAgo(l.created_at) + '</td>' +
+          '<td><strong>' + (l.event_type || '—') + '</strong></td>' +
+          '<td>' + statusBadge + '</td>' +
+          '<td style="font-size:.78rem;color:var(--muted);max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (l.response||'').replace(/"/g,'&quot;') + '">' + (l.response || '') + '</td>' +
+        '</tr>';
+      }).join('');
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function populateTopbar() {
+    const { data: { user } } = await _supabase.auth.getUser();
+    if (user) {
+      var email = user.email || '';
+      var initials = email.slice(0,2).toUpperCase();
+      document.querySelectorAll('.avatar-sm').forEach(function(a) { a.textContent = initials; });
+      document.querySelectorAll('.client-name').forEach(function(n) { n.textContent = email.split('@')[0]; });
+      document.getElementById('sidebar-name').textContent = email.split('@')[0];
+    }
+  }
+</script>
+</body>
+</html>

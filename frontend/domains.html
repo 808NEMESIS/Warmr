@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Warmr — Domeinen</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <style>
+    /* ── Blacklist alert ── */
+    .bl-alert {
+      display: flex; align-items: center; gap: .75rem;
+      background: #fde8e4; border: 1.5px solid var(--danger); border-radius: var(--radius-card);
+      padding: .875rem 1.125rem; margin-bottom: 1.25rem; font-size: .875rem;
+    }
+    .bl-alert-icon { font-size: 1.25rem; flex-shrink:0; }
+    .bl-alert strong { color: var(--danger); }
+
+    /* ── Domain table ── */
+    .domain-table-header {
+      display: grid;
+      grid-template-columns: 2fr .7fr .7fr .7fr .7fr 1.1fr .9fr 90px;
+      padding: .625rem 1.25rem;
+      font-size: .75rem; font-weight: 700; color: var(--muted);
+      text-transform: uppercase; letter-spacing: .04em;
+      border-bottom: 1px solid var(--border);
+    }
+    .domain-row {
+      display: grid;
+      grid-template-columns: 2fr .7fr .7fr .7fr .7fr 1.1fr .9fr 90px;
+      padding: .875rem 1.25rem; align-items: center;
+      border-bottom: 1px solid var(--border); transition: background var(--transition);
+      cursor: pointer;
+    }
+    .domain-row:last-child { border-bottom: none; }
+    .domain-row:hover { background: var(--bg); }
+    .domain-row.blacklisted-row { background: #fff5f5; }
+
+    .domain-name-cell { display: flex; align-items: center; gap: .625rem; min-width: 0; }
+    .domain-globe {
+      width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0;
+      background: var(--primary-light); display: flex; align-items: center;
+      justify-content: center; color: var(--primary); font-size: .875rem;
+    }
+    .domain-globe.bl { background: #fde8e4; color: var(--danger); }
+    .domain-name { font-size: .875rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .domain-registrar { font-size: .75rem; color: var(--muted); }
+
+    /* DNS badges */
+    .dns-ok   { color: var(--success); display:flex; align-items:center; gap:.3rem; font-size:.8125rem; font-weight:600; }
+    .dns-fail { color: var(--danger);  display:flex; align-items:center; gap:.3rem; font-size:.8125rem; font-weight:600; }
+    .dns-unk  { color: var(--muted);   display:flex; align-items:center; gap:.3rem; font-size:.8125rem; }
+
+    /* DMARC phase inline */
+    .dmarc-inline { display:flex; align-items:center; gap:.375rem; }
+    .dmarc-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+    .dp-none        { background: var(--muted); }
+    .dp-quarantine  { background: var(--warning); }
+    .dp-enforce     { background: var(--success); }
+
+    .action-cell { display:flex; gap:.375rem; justify-content:flex-end; }
+
+    /* ── DMARC stepper (in modal) ── */
+    .dmarc-stepper { display:flex; margin:1rem 0; }
+    .dmarc-step {
+      flex:1; text-align:center; padding:.625rem .5rem;
+      border:1.5px solid var(--border); background:var(--bg); color:var(--muted);
+      font-size:.8rem; font-weight:600; position:relative;
+    }
+    .dmarc-step:first-child { border-radius:8px 0 0 8px; }
+    .dmarc-step:last-child  { border-radius:0 8px 8px 0; }
+    .dmarc-step.done   { background:#d4f5ed33; border-color:var(--success); color:var(--success); }
+    .dmarc-step.active { background:var(--primary-light); border-color:var(--primary); color:var(--primary); }
+    .dmarc-step-sub { font-size:.7rem; font-weight:400; margin-top:.2rem; opacity:.8; }
+
+    /* DNS result cards */
+    .dns-result-grid { display:grid; grid-template-columns:1fr 1fr; gap:.75rem; margin-top:1rem; }
+    .dns-result-card {
+      border:1.5px solid var(--border); border-radius:var(--radius);
+      padding:.875rem 1rem;
+    }
+    .dns-result-card.ok   { border-color:var(--success); background:#d4f5ed22; }
+    .dns-result-card.fail { border-color:var(--danger);  background:#fde8e422; }
+    .dns-result-card.warn { border-color:var(--warning); background:#fff3cd22; }
+    .dns-result-title { font-size:.8125rem; font-weight:700; margin-bottom:.25rem; }
+    .dns-result-value { font-size:.75rem; color:var(--muted); font-family:monospace; word-break:break-all; }
+
+    /* DNS guide drawer */
+    .drawer-overlay { position:fixed;inset:0;background:rgba(0,0,0,.3);z-index:400;display:none; }
+    .drawer-overlay.open { display:block; }
+    .drawer {
+      position:fixed;top:0;right:-560px;width:560px;height:100vh;
+      background:var(--surface);box-shadow:var(--shadow-lg);z-index:500;
+      transition:right .25s ease;display:flex;flex-direction:column;
+    }
+    .drawer.open { right:0; }
+    .drawer-header { padding:1.5rem 1.75rem 1.25rem;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;justify-content:space-between;flex-shrink:0; }
+    .drawer-body { padding:1.5rem 1.75rem;flex:1;overflow-y:auto; }
+    .drawer-section { margin-bottom:1.75rem; }
+    .drawer-section-title { font-size:.75rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:.875rem; }
+
+    .guide-step { display:flex;gap:.875rem;margin-bottom:1.25rem; }
+    .guide-num {
+      width:28px;height:28px;border-radius:50%;flex-shrink:0;background:var(--primary);
+      color:#fff;display:flex;align-items:center;justify-content:center;font-size:.8125rem;font-weight:700;
+    }
+    .guide-title { font-size:.875rem;font-weight:700;margin-bottom:.25rem; }
+    .guide-desc  { font-size:.8125rem;color:var(--muted);line-height:1.5; }
+    .guide-code  {
+      background:var(--bg);border:1px solid var(--border);border-radius:6px;
+      padding:.5rem .75rem;margin-top:.5rem;font-family:monospace;font-size:.75rem;
+      word-break:break-all;position:relative;
+    }
+    .copy-btn {
+      position:absolute;top:.3rem;right:.375rem;padding:.15rem .4rem;
+      font-size:.7rem;border-radius:4px;background:var(--surface);border:1px solid var(--border);
+      cursor:pointer;color:var(--muted);
+    }
+    .copy-btn:hover { color:var(--primary);border-color:var(--primary); }
+
+    /* filter chips */
+    .filter-chips { display:flex;gap:.5rem; }
+    .filter-chip {
+      padding:.3rem .75rem;border-radius:99px;font-size:.8125rem;font-weight:600;
+      border:1.5px solid var(--border);cursor:pointer;background:var(--surface);color:var(--muted);
+      transition:all var(--transition);
+    }
+    .filter-chip.active { border-color:var(--primary);background:var(--primary-light);color:var(--primary); }
+  </style>
+</head>
+<body>
+
+<!-- ── Sidebar ─────────────────────────────────────────────────────────────── -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-mark">W</div>
+    <span class="logo-text">Warmr</span>
+  </div>
+  <div style="padding:.75rem 0;flex:1">
+    <div class="sidebar-section-label">Overzicht</div>
+    <a class="nav-link" href="dashboard.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+      Dashboard
+    </a>
+    <div class="sidebar-section-label">Campagnes</div>
+    <a class="nav-link" href="campaigns.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 9.8 19.79 19.79 0 012 4.18a2 2 0 012 2V8l2 1.5"/></svg>
+      Campagnes
+    </a>
+    <a class="nav-link" href="leads.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+      Leads
+    </a>
+    <a class="nav-link" href="unified-inbox.html" id="nav-replies">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+      Unified Inbox
+    </a>
+    <div class="sidebar-section-label">Infrastructuur</div>
+    <a class="nav-link" href="inboxes.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+      Inboxes
+    </a>
+    <a class="nav-link active" href="domains.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>
+      Domeinen
+    </a>
+    <div class="sidebar-section-label">Account</div>
+    <a class="nav-link" href="settings.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+      Instellingen
+    </a>
+  </div>
+  <div class="sidebar-footer">
+    <div style="display:flex;align-items:center;gap:.75rem">
+      <div class="avatar avatar-sm" id="sidebar-avatar">?</div>
+      <div style="flex:1;min-width:0">
+        <div class="text-sm font-semi truncate" id="sidebar-name">Laden…</div>
+        <div class="text-xs text-muted">Pro plan</div>
+      </div>
+      <button class="btn-icon" onclick="logout()" title="Uitloggen">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      </button>
+    </div>
+  </div>
+</aside>
+
+<!-- ── Topbar ──────────────────────────────────────────────────────────────── -->
+<header class="topbar">
+  <div class="topbar-left">
+    <h1 style="font-size:1.25rem;font-family:var(--font-disp);font-weight:400">Domeinen</h1>
+  </div>
+  <div class="topbar-right">
+    <button class="btn btn-secondary btn-sm" onclick="openGuide()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      DNS-gids
+    </button>
+    <button class="btn btn-primary btn-sm" onclick="openAddModal()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Domein toevoegen
+    </button>
+    <div id="topbar-client" style="display:flex;align-items:center;gap:.625rem;cursor:pointer" onclick="window.location.href='settings.html'">
+      <div class="avatar avatar-sm">?</div>
+      <span class="text-sm font-semi client-name" style="max-width:120px">—</span>
+    </div>
+  </div>
+</header>
+
+<!-- ── Main ───────────────────────────────────────────────────────────────── -->
+<div class="main-layout">
+  <div class="main-content">
+    <div class="page">
+
+      <!-- Blacklist alert (hidden by default) -->
+      <div id="bl-alert" class="bl-alert" style="display:none">
+        <div class="bl-alert-icon">🚨</div>
+        <div>
+          <strong>Let op — een of meer domeinen staan op een blacklist!</strong>
+          Stuur geen campagne-e-mails tot dit is opgelost. Controleer de gemarkeerde rijen hieronder.
+        </div>
+      </div>
+
+      <!-- Stats -->
+      <div class="stats-grid" id="stats-grid" style="grid-template-columns:repeat(5,1fr)">
+        <div class="stat-card"><div class="stat-label">Totaal domeinen</div><div class="skeleton" id="s-total" style="width:50px;height:32px;margin-top:.25rem"></div></div>
+        <div class="stat-card"><div class="stat-label">SPF ✓</div><div class="skeleton" id="s-spf" style="width:50px;height:32px;margin-top:.25rem"></div></div>
+        <div class="stat-card"><div class="stat-label">DKIM ✓</div><div class="skeleton" id="s-dkim" style="width:50px;height:32px;margin-top:.25rem"></div></div>
+        <div class="stat-card stat-card-accent"><div class="stat-label">DMARC enforce</div><div class="skeleton" id="s-dmarc" style="width:50px;height:32px;margin-top:.25rem"></div></div>
+        <div class="stat-card"><div class="stat-label">Op blacklist</div><div class="skeleton" id="s-bl" style="width:50px;height:32px;margin-top:.25rem"></div></div>
+      </div>
+
+      <!-- Table -->
+      <div class="card" style="padding:0;overflow:hidden">
+        <div style="padding:1.25rem 1.5rem;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap">
+          <div class="filter-chips">
+            <div class="filter-chip active" onclick="setFilter('all',this)">Alle</div>
+            <div class="filter-chip" onclick="setFilter('ok',this)">DNS compleet</div>
+            <div class="filter-chip" onclick="setFilter('issue',this)">Aandacht vereist</div>
+            <div class="filter-chip" onclick="setFilter('bl',this)">Geblacklist</div>
+          </div>
+          <input type="search" class="form-input" id="search" placeholder="Zoek domein…"
+            style="width:210px;font-size:.8125rem;padding:.4rem .75rem" oninput="renderTable()">
+        </div>
+
+        <div class="domain-table-header">
+          <div>Domein</div>
+          <div>SPF</div>
+          <div>DKIM</div>
+          <div>MX</div>
+          <div>Inboxes</div>
+          <div>DMARC fase</div>
+          <div>Blacklist</div>
+          <div></div>
+        </div>
+
+        <div id="domain-list">
+          <div style="padding:2rem;text-align:center;color:var(--muted);font-size:.875rem">Domeinen laden…</div>
+        </div>
+
+        <div id="empty-state" class="empty-state" style="display:none">
+          <div class="empty-state-icon">🌐</div>
+          <div class="empty-state-title">Nog geen domeinen</div>
+          <div class="empty-state-sub">Voeg je eerste verzenddomein toe</div>
+          <button class="btn btn-primary btn-sm" style="margin-top:1rem" onclick="openAddModal()">Domein toevoegen</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ── Add Domain Modal ───────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal-add" style="display:none" onclick="if(event.target===this)closeAddModal()">
+  <div class="modal" style="max-width:480px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem">
+      <h3 style="font-family:var(--font-disp);font-size:1.25rem">Domein toevoegen</h3>
+      <button class="btn-icon" onclick="closeAddModal()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Domeinnaam <span style="color:var(--danger)">*</span></label>
+      <input id="add-domain" type="text" class="form-input" placeholder="jouwdomein.nl">
+      <span class="form-hint">Alleen het domein, zonder www of https</span>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Registrar</label>
+      <select id="add-registrar" class="form-select">
+        <option value="">— Selecteer —</option>
+        <option value="transip">TransIP</option>
+        <option value="namecheap">Namecheap</option>
+        <option value="cloudflare">Cloudflare</option>
+        <option value="godaddy">GoDaddy</option>
+        <option value="other">Overig</option>
+      </select>
+    </div>
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:.875rem 1rem;font-size:.8125rem;color:var(--muted);line-height:1.5;margin:.5rem 0">
+      Na toevoegen voeren we automatisch een DNS-check uit. Configureer SPF, DKIM en MX eerst via je registrar.
+      Klik op <strong>DNS-gids</strong> voor stap-voor-stap instructies.
+    </div>
+    <div style="display:flex;gap:.75rem;margin-top:1.25rem">
+      <button class="btn btn-ghost" onclick="closeAddModal()">Annuleren</button>
+      <button id="btn-add" class="btn btn-primary" style="flex:1" onclick="doAddDomain()">Toevoegen &amp; controleren</button>
+    </div>
+    <div id="add-error" class="form-error" style="display:none;margin-top:.75rem"></div>
+  </div>
+</div>
+
+<!-- ── DNS Check Modal ─────────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal-dns" style="display:none" onclick="if(event.target===this)document.getElementById('modal-dns').style.display='none'">
+  <div class="modal" style="max-width:560px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.375rem">
+      <h3 style="font-family:var(--font-disp);font-size:1.25rem" id="dns-title">DNS controle</h3>
+      <button class="btn-icon" onclick="document.getElementById('modal-dns').style.display='none'">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="text-sm text-muted" id="dns-sub" style="margin-bottom:1.25rem">—</div>
+
+    <!-- DMARC stepper -->
+    <div style="margin-bottom:1rem">
+      <div class="drawer-section-title" style="font-size:.75rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.5rem">DMARC fase</div>
+      <div class="dmarc-stepper" id="dmarc-stepper">
+        <div class="dmarc-step" id="ds-none">Fase 1<div class="dmarc-step-sub">p=none</div></div>
+        <div class="dmarc-step" id="ds-quarantine">Fase 2<div class="dmarc-step-sub">p=quarantine</div></div>
+        <div class="dmarc-step" id="ds-enforce">Fase 3<div class="dmarc-step-sub">p=reject</div></div>
+      </div>
+    </div>
+
+    <div class="dns-result-grid" id="dns-results">
+      <div style="grid-column:1/-1;text-align:center;padding:2rem;color:var(--muted)">Controleren…</div>
+    </div>
+
+    <!-- Live DNS health indicator -->
+    <div id="dns-health-indicator" style="display:none;margin-top:1.25rem;padding:.75rem 1rem;border-radius:10px;border:1.5px solid var(--border);font-size:.8125rem">
+      <div style="display:flex;align-items:center;gap:.625rem">
+        <span id="dns-health-dot" style="width:9px;height:9px;border-radius:50%;flex-shrink:0"></span>
+        <span id="dns-health-text" style="font-weight:600"></span>
+        <span id="dns-health-sub" style="color:var(--muted);margin-left:auto;font-size:.75rem"></span>
+      </div>
+    </div>
+
+    <!-- Blacklist recovery panel (shown only when blacklisted) -->
+    <div id="recovery-panel" style="display:none;margin-top:1.25rem;border:1.5px solid #e74c3c33;border-radius:10px;overflow:hidden">
+      <div style="background:#e74c3c18;padding:.75rem 1rem;display:flex;align-items:center;justify-content:space-between">
+        <div style="font-weight:700;font-size:.875rem;color:#c0392b">Blacklist herstelplan</div>
+        <span id="recovery-bl-name" style="font-size:.75rem;color:var(--muted)"></span>
+      </div>
+      <div id="recovery-steps-list" style="padding:.875rem 1rem;display:flex;flex-direction:column;gap:.625rem"></div>
+    </div>
+
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:1.5rem;flex-wrap:wrap;gap:.75rem">
+      <span class="text-xs text-muted" id="dns-check-time">—</span>
+      <div style="display:flex;gap:.75rem">
+        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('modal-dns').style.display='none'">Sluiten</button>
+        <button id="btn-recheck" class="btn btn-primary btn-sm" onclick="runDnsCheck()">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
+          Hercheck
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Delete Modal ────────────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal-delete" style="display:none" onclick="if(event.target===this)closeDeleteModal()">
+  <div class="modal" style="max-width:420px;text-align:center">
+    <div style="font-size:2.5rem;margin-bottom:.75rem">🗑️</div>
+    <h3 style="font-family:var(--font-disp);font-size:1.25rem;margin-bottom:.5rem">Domein verwijderen</h3>
+    <p class="text-muted text-sm" style="margin-bottom:1.5rem">
+      Weet je zeker dat je <strong id="del-domain">dit domein</strong> wil verwijderen?
+      Gekoppelde inboxes worden niet verwijderd.
+    </p>
+    <div style="display:flex;gap:.75rem">
+      <button class="btn btn-ghost" style="flex:1" onclick="closeDeleteModal()">Annuleren</button>
+      <button id="btn-confirm-del" class="btn btn-danger" style="flex:1" onclick="doDelete()">Verwijderen</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── DNS Guide Drawer ────────────────────────────────────────────────────── -->
+<div class="drawer-overlay" id="guide-overlay" onclick="closeGuide()"></div>
+<div class="drawer" id="guide-drawer">
+  <div class="drawer-header">
+    <div>
+      <div style="font-family:var(--font-disp);font-size:1.125rem;font-weight:600">DNS configuratiegids</div>
+      <div style="font-size:.8125rem;color:var(--muted);margin-top:.2rem">Google Workspace — stap voor stap</div>
+    </div>
+    <button class="btn-icon" onclick="closeGuide()">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div class="drawer-body">
+    <div class="drawer-section">
+      <div class="drawer-section-title">Volgorde van configuratie</div>
+      <p class="text-sm text-muted" style="margin-bottom:1.25rem;line-height:1.6">Volg altijd deze volgorde. Start geen warmup voordat alles groen is in MXToolbox.</p>
+
+      <div class="guide-step">
+        <div class="guide-num">1</div>
+        <div>
+          <div class="guide-title">SPF record</div>
+          <div class="guide-desc">Voeg TXT record toe aan DNS. Gebruik <code style="background:var(--bg);padding:.1rem .3rem;border-radius:4px;font-family:monospace;font-size:.8rem">~all</code> tijdens setup.</div>
+          <div class="guide-code">v=spf1 include:_spf.google.com ~all<button class="copy-btn" onclick="copyToClipboard('v=spf1 include:_spf.google.com ~all','SPF record')">Kopieer</button></div>
+        </div>
+      </div>
+      <div class="guide-step">
+        <div class="guide-num">2</div>
+        <div>
+          <div class="guide-title">DKIM activeren</div>
+          <div class="guide-desc">Google Workspace Admin → Apps → Gmail → Authenticate email → genereer sleutel → voeg TXT toe.</div>
+          <div class="guide-code">Hostnaam: google._domainkey.jouwdomein.nl<br>Type: TXT<br>Waarde: v=DKIM1; k=rsa; p=&lt;sleutel&gt;</div>
+        </div>
+      </div>
+      <div class="guide-step">
+        <div class="guide-num">3</div>
+        <div>
+          <div class="guide-title">MX records</div>
+          <div class="guide-desc">Google Workspace MX records toevoegen:</div>
+          <div class="guide-code">1  ASPMX.L.GOOGLE.COM<br>5  ALT1.ASPMX.L.GOOGLE.COM<br>5  ALT2.ASPMX.L.GOOGLE.COM<br>10 ALT3.ASPMX.L.GOOGLE.COM<br>10 ALT4.ASPMX.L.GOOGLE.COM</div>
+        </div>
+      </div>
+      <div class="guide-step">
+        <div class="guide-num">4</div>
+        <div>
+          <div class="guide-title">DMARC Fase 1 — Monitoring</div>
+          <div class="guide-desc">Hostnaam: <code style="background:var(--bg);padding:.1rem .3rem;border-radius:4px;font-family:monospace;font-size:.8rem">_dmarc.jouwdomein.nl</code> · Type: TXT</div>
+          <div class="guide-code">v=DMARC1; p=none; rua=mailto:dmarc@jouwdomein.nl<button class="copy-btn" onclick="copyToClipboard('v=DMARC1; p=none; rua=mailto:dmarc@jouwdomein.nl','DMARC fase 1')">Kopieer</button></div>
+        </div>
+      </div>
+      <div class="guide-step">
+        <div class="guide-num">5</div>
+        <div>
+          <div class="guide-title">DMARC Fase 2 — Week 3–4</div>
+          <div class="guide-code">v=DMARC1; p=quarantine; pct=50; rua=mailto:dmarc@jouwdomein.nl<button class="copy-btn" onclick="copyToClipboard('v=DMARC1; p=quarantine; pct=50; rua=mailto:dmarc@jouwdomein.nl','DMARC fase 2')">Kopieer</button></div>
+        </div>
+      </div>
+      <div class="guide-step">
+        <div class="guide-num">6</div>
+        <div>
+          <div class="guide-title">DMARC Fase 3 — Week 5+</div>
+          <div class="guide-code">v=DMARC1; p=reject; rua=mailto:dmarc@jouwdomein.nl<button class="copy-btn" onclick="copyToClipboard('v=DMARC1; p=reject; rua=mailto:dmarc@jouwdomein.nl','DMARC fase 3')">Kopieer</button></div>
+        </div>
+      </div>
+    </div>
+    <div class="drawer-section">
+      <div class="drawer-section-title">Verificatie tools</div>
+      <div style="display:flex;flex-direction:column;gap:.5rem">
+        <div style="display:flex;justify-content:space-between;padding:.625rem .875rem;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:.875rem"><span>MXToolbox</span><span class="text-xs text-muted">mxtoolbox.com</span></div>
+        <div style="display:flex;justify-content:space-between;padding:.625rem .875rem;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:.875rem"><span>mail-tester.com <span class="badge badge-muted" style="font-size:.65rem">min. 8/10</span></span><span class="text-xs text-muted">gratis</span></div>
+        <div style="display:flex;justify-content:space-between;padding:.625rem .875rem;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:.875rem"><span>Google Postmaster Tools</span><span class="text-xs text-muted">postmaster.google.com</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+<script src="config.js"></script>
+<script src="app.js"></script>
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+let _domains  = [];
+let _inboxes  = [];
+let _filter   = 'all';
+let _current  = null;
+
+const DMARC_LABEL = { none:'Monitoring', quarantine:'Quarantine', enforce:'Enforce' };
+const DMARC_TYPE  = { none:'info', quarantine:'warning', enforce:'success' };
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+(async () => {
+  await requireAuth();
+  populateTopbar(); populateSidebar();
+  await Promise.all([loadDomains(), loadInboxes()]);
+  if (window.location.hash === '#new') openAddModal();
+})();
+
+async function populateSidebar() {
+  const { data: { user } } = await _supabase.auth.getUser();
+  if (!user) return;
+  const email = user.email||'';
+  const el = document.getElementById('sidebar-avatar');
+  const ne = document.getElementById('sidebar-name');
+  if (el) el.textContent = email.slice(0,2).toUpperCase();
+  if (ne) ne.textContent = email.split('@')[0];
+}
+
+// ── Load ──────────────────────────────────────────────────────────────────────
+async function loadDomains() {
+  try {
+    _domains = await api('/domains');
+    checkBlacklist();
+    updateStats();
+    renderTable();
+  } catch(e) {
+    toast(e.message,'error');
+    document.getElementById('domain-list').innerHTML=`<div style="padding:2rem;text-align:center;color:var(--muted)">Kon domeinen niet laden.</div>`;
+  }
+}
+async function loadInboxes() {
+  try { _inboxes = await api('/inboxes'); } catch {}
+}
+
+function checkBlacklist() {
+  const bl = _domains.filter(d=>d.blacklisted);
+  document.getElementById('bl-alert').style.display = bl.length ? 'flex' : 'none';
+}
+
+function updateStats() {
+  const t = _domains.length;
+  const spf  = _domains.filter(d=>d.spf_configured).length;
+  const dkim = _domains.filter(d=>d.dkim_configured).length;
+  const enf  = _domains.filter(d=>d.dmarc_phase==='enforce').length;
+  const bl   = _domains.filter(d=>d.blacklisted).length;
+  const r = id => document.getElementById(id);
+  r('s-total').outerHTML = `<div class="stat-value" id="s-total">${t}</div>`;
+  r('s-spf').outerHTML   = `<div class="stat-value" id="s-spf">${spf}/${t}</div>`;
+  r('s-dkim').outerHTML  = `<div class="stat-value" id="s-dkim">${dkim}/${t}</div>`;
+  r('s-dmarc').outerHTML = `<div class="stat-value" id="s-dmarc">${enf}</div>`;
+  r('s-bl').outerHTML    = `<div class="stat-value ${bl>0?'':''}${bl>0?'text-danger':''}" id="s-bl">${bl}</div>`;
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+function setFilter(f, el) {
+  _filter=f;
+  document.querySelectorAll('.filter-chip').forEach(c=>c.classList.remove('active'));
+  el.classList.add('active');
+  renderTable();
+}
+
+function renderTable() {
+  const q = (document.getElementById('search').value||'').toLowerCase();
+  const filtered = _domains.filter(d => {
+    if (_filter==='ok'    && !(d.spf_configured && d.dkim_configured)) return false;
+    if (_filter==='issue' && (d.spf_configured && d.dkim_configured && !d.blacklisted)) return false;
+    if (_filter==='bl'    && !d.blacklisted) return false;
+    if (q && !d.domain.toLowerCase().includes(q)) return false;
+    return true;
+  });
+
+  const list = document.getElementById('domain-list');
+  const empty= document.getElementById('empty-state');
+  if (!_domains.length) { list.innerHTML=''; empty.style.display='flex'; return; }
+  empty.style.display='none';
+  if (!filtered.length) { list.innerHTML=`<div style="padding:2rem;text-align:center;color:var(--muted);font-size:.875rem">Geen domeinen gevonden.</div>`; return; }
+
+  list.innerHTML = filtered.map(d => renderRow(d)).join('');
+}
+
+function dnsIcon(ok, size=14) {
+  if (ok===true)  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+  if (ok===false) return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12.01" y2="16"/><line x1="12" y1="8" x2="12" y2="12"/></svg>`;
+}
+
+function renderRow(d) {
+  const inboxCount = _inboxes.filter(i=>i.domain===d.domain).length;
+  const phase  = d.dmarc_phase||'none';
+  const bl     = d.blacklisted;
+  const spfCls = d.spf_configured  ? 'dns-ok'  : d.spf_configured===false  ? 'dns-fail' : 'dns-unk';
+  const dkimCls= d.dkim_configured ? 'dns-ok'  : d.dkim_configured===false ? 'dns-fail' : 'dns-unk';
+  const mxCls  = d.mx_configured   ? 'dns-ok'  : d.mx_configured===false   ? 'dns-fail' : 'dns-unk';
+  const lastCheck = d.last_blacklist_check ? `Check ${timeAgo(d.last_blacklist_check)}` : 'Nooit gecheckt';
+
+  return `
+    <div class="domain-row${bl?' blacklisted-row':''}" onclick="openDnsModal('${d.id}')">
+      <div class="domain-name-cell">
+        <div class="domain-globe${bl?' bl':''}">${bl?'⚠':'🌐'}</div>
+        <div>
+          <div class="domain-name">${d.domain}</div>
+          <div class="domain-registrar">${d.registrar||'—'} · ${lastCheck}</div>
+        </div>
+      </div>
+      <div class="${spfCls}">${dnsIcon(d.spf_configured)} ${d.spf_configured?'OK':'Ontbreekt'}</div>
+      <div class="${dkimCls}">${dnsIcon(d.dkim_configured)} ${d.dkim_configured?'OK':'Ontbreekt'}</div>
+      <div class="${mxCls}">${dnsIcon(d.mx_configured??null)} ${d.mx_configured==null?'?':d.mx_configured?'OK':'Ontbreekt'}</div>
+      <div class="text-sm">${inboxCount} inbox${inboxCount!==1?'es':''}</div>
+      <div class="dmarc-inline">
+        <div class="dmarc-dot dp-${phase}"></div>
+        <span class="badge badge-${DMARC_TYPE[phase]||'muted'}">${DMARC_LABEL[phase]||phase}</span>
+      </div>
+      <div class="${bl?'dns-fail':'dns-ok'}">${dnsIcon(bl?false:true)} ${bl?'Geblacklist':'Schoon'}</div>
+      <div class="action-cell" onclick="event.stopPropagation()">
+        <button class="btn btn-secondary btn-sm" onclick="openDnsModal('${d.id}')">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
+          Check
+        </button>
+        <button class="btn-icon" onclick="openDeleteModal('${d.id}')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+// ── DNS check modal ───────────────────────────────────────────────────────────
+function openDnsModal(id) {
+  _current = _domains.find(d=>d.id===id);
+  if (!_current) return;
+  document.getElementById('dns-title').textContent = `DNS controle — ${_current.domain}`;
+  document.getElementById('dns-sub').textContent   = 'Live DNS-check via MXToolbox API. Resultaten worden opgeslagen.';
+  document.getElementById('modal-dns').style.display='flex';
+  renderDmarcStepper(_current.dmarc_phase||'none');
+  if (_current.last_blacklist_check) {
+    renderDnsResults(_current);
+    document.getElementById('dns-check-time').textContent = `Laatste check: ${formatDateTime(_current.last_blacklist_check)}`;
+  } else {
+    document.getElementById('dns-results').innerHTML=`<div style="grid-column:1/-1;text-align:center;padding:2rem;color:var(--muted)">Klik op Hercheck om DNS te controleren.</div>`;
+    document.getElementById('dns-check-time').textContent='';
+  }
+}
+
+function renderDmarcStepper(phase) {
+  const order=['none','quarantine','enforce'];
+  const idx=order.indexOf(phase);
+  order.forEach((p,i)=>{
+    const el=document.getElementById(`ds-${p}`);
+    if (!el) return;
+    el.className='dmarc-step'+(i<idx?' done':i===idx?' active':'');
+  });
+}
+
+function renderDnsResults(d) {
+  const card=(title,ok,val)=>{
+    const cls=ok===true?'ok':ok===false?'fail':'warn';
+    const sym=ok===true?'✓':ok===false?'✗':'?';
+    return `<div class="dns-result-card ${cls}"><div class="dns-result-title">${sym} ${title}</div><div class="dns-result-value">${val||''}</div></div>`;
+  };
+  const phaseDesc={none:'p=none — monitoring actief',quarantine:'p=quarantine — verdachte mail in spam',enforce:'p=reject — volledig afgedwongen'};
+  document.getElementById('dns-results').innerHTML =
+    card('SPF', d.spf_configured, d.spf_configured?'include:_spf.google.com gevonden':'Geen SPF TXT record') +
+    card('DKIM', d.dkim_configured, d.dkim_configured?'google._domainkey record gevonden':'Geen DKIM record') +
+    card('MX', d.mx_configured??null, d.mx_configured==null?'Nog niet gecheckt':d.mx_configured?'Google MX records gevonden':'Geen MX records') +
+    card('DMARC', d.dmarc_phase&&d.dmarc_phase!=='none'?true:null, phaseDesc[d.dmarc_phase]||'Geen DMARC record') +
+    `<div class="dns-result-card ${d.blacklisted?'fail':'ok'}" style="grid-column:1/-1">
+      <div class="dns-result-title">${d.blacklisted?'✗':'✓'} Blacklist status</div>
+      <div class="dns-result-value">${d.blacklisted?'Domein staat op een of meer blacklists — herstelactie vereist':'Niet gevonden op bekende blacklists'}</div>
+    </div>`;
+}
+
+async function runDnsCheck() {
+  if (!_current) return;
+  const btn=document.getElementById('btn-recheck');
+  setLoading(btn,true,'Controleren…');
+  document.getElementById('dns-results').innerHTML=`<div style="grid-column:1/-1;text-align:center;padding:2rem;color:var(--muted)">DNS records ophalen…</div>`;
+  try {
+    const result = await api(`/domains/${_current.id}/dns-check`);
+    const idx=_domains.findIndex(d=>d.id===_current.id);
+    const now=new Date().toISOString();
+    if (idx!==-1) { _domains[idx]={..._domains[idx],...result,last_blacklist_check:now}; _current=_domains[idx]; }
+    renderDmarcStepper(result.dmarc_phase||'none');
+    renderDnsResults({..._current,...result});
+    document.getElementById('dns-check-time').textContent=`Gecontroleerd: ${formatDateTime(now)}`;
+    renderTable(); updateStats(); checkBlacklist();
+
+    const issues=[!result.spf_configured&&'SPF',!result.dkim_configured&&'DKIM',result.blacklisted&&'Blacklist'].filter(Boolean);
+    if (issues.length) toast(`${_current.domain}: ${issues.join(', ')} vereist aandacht`,'warning');
+    else toast(`DNS OK voor ${_current.domain}`,'success');
+  } catch(e) {
+    document.getElementById('dns-results').innerHTML=`<div style="grid-column:1/-1;text-align:center;padding:2rem;color:var(--danger)">Check mislukt: ${e.message}</div>`;
+    toast(e.message,'error');
+  } finally { setLoading(btn,false,'Hercheck'); }
+}
+
+// ── Add domain ────────────────────────────────────────────────────────────────
+function openAddModal() { document.getElementById('modal-add').style.display='flex'; }
+function closeAddModal() {
+  document.getElementById('modal-add').style.display='none';
+  document.getElementById('add-domain').value='';
+  document.getElementById('add-registrar').value='';
+  document.getElementById('add-error').style.display='none';
+}
+
+async function doAddDomain() {
+  const raw = document.getElementById('add-domain').value.trim().toLowerCase().replace(/^https?:\/\//,'').replace(/^www\./,'').split('/')[0];
+  const registrar = document.getElementById('add-registrar').value;
+  const err = document.getElementById('add-error');
+  const btn = document.getElementById('btn-add');
+  err.style.display='none';
+  if (!raw) { err.textContent='Vul een domeinnaam in.'; err.style.display='block'; return; }
+  setLoading(btn,true,'Toevoegen…');
+  try {
+    const d=await api('/domains',{method:'POST',body:JSON.stringify({domain:raw,registrar:registrar||null})});
+    _domains.push(d); _current=d;
+    renderTable(); updateStats();
+    closeAddModal();
+    toast(`${raw} toegevoegd`,'success');
+    openDnsModal(d.id);
+  } catch(e) { err.textContent=e.message; err.style.display='block'; }
+  finally { setLoading(btn,false,'Toevoegen & controleren'); }
+}
+
+// ── Delete ────────────────────────────────────────────────────────────────────
+function openDeleteModal(id) {
+  _current=_domains.find(d=>d.id===id);
+  if (!_current) return;
+  document.getElementById('del-domain').textContent=_current.domain;
+  document.getElementById('modal-delete').style.display='flex';
+}
+function closeDeleteModal() { document.getElementById('modal-delete').style.display='none'; }
+
+async function doDelete() {
+  if (!_current) return;
+  const btn=document.getElementById('btn-confirm-del');
+  setLoading(btn,true,'Verwijderen…');
+  try {
+    await api(`/domains/${_current.id}`,{method:'DELETE'});
+    _domains=_domains.filter(d=>d.id!==_current.id);
+    renderTable(); updateStats(); checkBlacklist();
+    closeDeleteModal();
+    document.getElementById('modal-dns').style.display='none';
+    _current=null;
+    toast('Domein verwijderd','success');
+  } catch(e) { toast(e.message,'error'); }
+  finally { setLoading(btn,false,'Verwijderen'); }
+}
+
+// ── Guide drawer ──────────────────────────────────────────────────────────────
+function openGuide() { document.getElementById('guide-overlay').classList.add('open'); document.getElementById('guide-drawer').classList.add('open'); }
+function closeGuide() { document.getElementById('guide-overlay').classList.remove('open'); document.getElementById('guide-drawer').classList.remove('open'); }
+
+// ── Live DNS health indicator ─────────────────────────────────────────────────
+function renderDnsHealthIndicator(domain) {
+  const el      = document.getElementById('dns-health-indicator');
+  const dot     = document.getElementById('dns-health-dot');
+  const text    = document.getElementById('dns-health-text');
+  const sub     = document.getElementById('dns-health-sub');
+  const status  = domain.dns_check_status || 'unknown';
+  const lastCheck = domain.last_dns_check ? `Gecontroleerd ${timeAgo(domain.last_dns_check)}` : 'Nog niet gemonitord';
+
+  const cfg = {
+    ok:      { color: 'var(--success, #00b894)', label: 'DNS configuratie gezond' },
+    warning: { color: '#f39c12',                 label: 'DNS wijziging gedetecteerd' },
+    error:   { color: 'var(--danger, #e74c3c)',  label: 'DNS probleem gevonden' },
+    unknown: { color: 'var(--muted)',             label: 'DNS status onbekend' },
+  }[status] || { color: 'var(--muted)', label: status };
+
+  dot.style.background  = cfg.color;
+  text.textContent      = cfg.label;
+  text.style.color      = cfg.color;
+  sub.textContent       = lastCheck;
+  el.style.display      = 'block';
+}
+
+// ── Blacklist recovery panel ──────────────────────────────────────────────────
+let _currentRecovery = null;
+
+async function loadRecoveryPanel(domainId) {
+  const panel = document.getElementById('recovery-panel');
+  if (!_current || !_current.blacklisted) {
+    panel.style.display = 'none';
+    return;
+  }
+  try {
+    const res = await api(`/domains/${domainId}/blacklist-recovery`);
+    if (!res.recovery) { panel.style.display = 'none'; return; }
+    _currentRecovery = res.recovery;
+    renderRecoveryPanel(res.recovery);
+  } catch(_) {
+    panel.style.display = 'none';
+  }
+}
+
+function renderRecoveryPanel(recovery) {
+  const panel    = document.getElementById('recovery-panel');
+  const nameEl   = document.getElementById('recovery-bl-name');
+  const stepsEl  = document.getElementById('recovery-steps-list');
+
+  nameEl.textContent = recovery.blacklist_name || '';
+  const steps = recovery.recovery_steps || [];
+
+  stepsEl.innerHTML = steps.map(s => `
+    <div style="display:flex;gap:.625rem;align-items:flex-start">
+      <button
+        onclick="toggleRecoveryStep(${s.step})"
+        style="width:20px;height:20px;border-radius:50%;border:2px solid ${s.completed ? 'var(--success,#00b894)' : 'var(--border)'};
+               background:${s.completed ? 'var(--success,#00b894)' : 'transparent'};
+               flex-shrink:0;cursor:pointer;display:flex;align-items:center;justify-content:center;margin-top:.15rem"
+        title="${s.completed ? 'Markeer als niet voltooid' : 'Markeer als voltooid'}">
+        ${s.completed ? '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>' : ''}
+      </button>
+      <div style="flex:1">
+        <div style="font-size:.8rem;font-weight:600;color:var(--muted);margin-bottom:.2rem">Stap ${s.step}</div>
+        <div style="font-size:.8125rem;line-height:1.5;${s.completed ? 'text-decoration:line-through;opacity:.6' : ''}">${s.description}</div>
+      </div>
+    </div>
+  `).join('');
+
+  panel.style.display = 'block';
+}
+
+async function toggleRecoveryStep(stepNum) {
+  if (!_currentRecovery || !_current) return;
+  const step = (_currentRecovery.recovery_steps || []).find(s => s.step === stepNum);
+  if (!step) return;
+  try {
+    await api(`/domains/${_current.id}/blacklist-recovery/steps/${stepNum}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        recovery_id: _currentRecovery.id,
+        completed:   !step.completed,
+      }),
+    });
+    // Reload recovery
+    const res = await api(`/domains/${_current.id}/blacklist-recovery`);
+    if (res.recovery) {
+      _currentRecovery = res.recovery;
+      renderRecoveryPanel(res.recovery);
+      if (res.recovery.resolved) {
+        toast('Herstelplan afgerond — domein is van de blacklist verwijderd!', 'success');
+        const idx = _domains.findIndex(d => d.id === _current.id);
+        if (idx !== -1) { _domains[idx].blacklisted = false; }
+        renderTable(); updateStats(); checkBlacklist();
+      }
+    }
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+// Override openDnsModal to also load health indicator + recovery
+const _origOpenDnsModal = openDnsModal;
+function openDnsModal(id) {
+  _origOpenDnsModal(id);
+  if (_current) {
+    renderDnsHealthIndicator(_current);
+    loadRecoveryPanel(_current.id);
+  }
+}
+</script>
+</body>
+</html>

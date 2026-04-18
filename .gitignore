@@ -1,0 +1,41 @@
+# Credentials — nooit committen
+.env
+.env.local
+.env.*.local
+*.env
+frontend/config.js
+
+# Certificates & keys
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Logs
+*.log
+logs/
+
+# macOS
+.DS_Store
+.AppleDouble
+
+# Node (frontend tooling)
+node_modules/
+
+# Screenshots / recordings
+screenshots/
+recordings/
+
+# IDE
+.vscode/settings.json
+.idea/

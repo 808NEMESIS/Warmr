@@ -1,0 +1,1953 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Warmr — Campagnes</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <style>
+    /* ── Page-specific styles ──────────────────────────────── */
+
+    /* Views */
+    .view { display: none; }
+    .view.active { display: block; }
+
+    /* ── Campaign list ───────────────────── */
+    .filter-bar {
+      display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
+      margin-bottom: 1.5rem;
+    }
+    .filter-chip {
+      padding: .375rem .875rem; border-radius: 99px; font-size: .8rem;
+      font-weight: 600; cursor: pointer; border: 1.5px solid var(--border);
+      background: var(--surface); color: var(--muted); transition: all var(--transition);
+    }
+    .filter-chip.active {
+      border-color: var(--primary); background: #ede8ff; color: var(--primary);
+    }
+    .campaign-row-actions { display: flex; gap: .375rem; }
+
+    /* ── Builder ─────────────────────────── */
+    .builder-shell { max-width: 820px; margin: 0 auto; }
+    .builder-step  { display: none; }
+    .builder-step.active { display: block; }
+
+    .step-section {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius-card); padding: 1.5rem; margin-bottom: 1.25rem;
+      box-shadow: var(--shadow-sm);
+    }
+    .step-section-title {
+      font-size: .9375rem; font-weight: 700; margin-bottom: 1rem; color: var(--text);
+    }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: .875rem; }
+    @media(max-width:640px) { .two-col,.three-col { grid-template-columns: 1fr; } }
+
+    /* Send days checkboxes */
+    .days-grid {
+      display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .5rem;
+    }
+    .day-chip {
+      width: 40px; height: 40px; border-radius: 8px; border: 1.5px solid var(--border);
+      display: flex; align-items: center; justify-content: center;
+      font-size: .8rem; font-weight: 700; cursor: pointer; background: var(--surface);
+      color: var(--muted); transition: all var(--transition); user-select: none;
+    }
+    .day-chip.active {
+      border-color: var(--primary); background: #ede8ff; color: var(--primary);
+    }
+
+    /* Toggle switch */
+    .toggle-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: .75rem 0; border-bottom: 1px solid var(--border);
+    }
+    .toggle-row:last-child { border-bottom: none; padding-bottom: 0; }
+    .toggle-label { font-size: .875rem; font-weight: 500; }
+    .toggle-sub   { font-size: .75rem; color: var(--muted); margin-top: .1rem; }
+    .toggle {
+      position: relative; width: 44px; height: 24px; flex-shrink: 0; cursor: pointer;
+    }
+    .toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+    .toggle-track {
+      position: absolute; inset: 0; background: var(--border);
+      border-radius: 99px; transition: background var(--transition);
+    }
+    .toggle input:checked ~ .toggle-track { background: var(--primary); }
+    .toggle-thumb {
+      position: absolute; top: 3px; left: 3px; width: 18px; height: 18px;
+      background: #fff; border-radius: 50%; transition: transform var(--transition);
+      box-shadow: 0 1px 3px rgba(0,0,0,.2);
+    }
+    .toggle input:checked ~ .toggle-thumb { transform: translateX(20px); }
+
+    /* ── Sequence builder ────────────────── */
+    .sequence-timeline { position: relative; }
+    .sequence-timeline::before {
+      content: ''; position: absolute; left: 19px; top: 0; bottom: 0;
+      width: 2px; background: var(--border); z-index: 0;
+    }
+    .seq-step-wrap { position: relative; display: flex; gap: 1rem; margin-bottom: 1.25rem; }
+    .seq-step-num {
+      width: 40px; height: 40px; border-radius: 50%; background: var(--gradient);
+      color: #fff; display: flex; align-items: center; justify-content: center;
+      font-size: .875rem; font-weight: 700; flex-shrink: 0; z-index: 1;
+      box-shadow: 0 2px 8px rgba(108,92,231,.3);
+    }
+    .seq-step-card {
+      flex: 1; background: var(--surface); border: 1.5px solid var(--border);
+      border-radius: var(--radius-card); padding: 1.25rem; box-shadow: var(--shadow-sm);
+      transition: border-color var(--transition);
+    }
+    .seq-step-card:focus-within { border-color: var(--primary); }
+    .seq-step-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 1rem;
+    }
+    .seq-step-title { font-size: .9rem; font-weight: 700; color: var(--text); }
+    .seq-step-actions { display: flex; gap: .375rem; }
+
+    .body-toolbar {
+      display: flex; gap: .375rem; flex-wrap: wrap; padding: .5rem .75rem;
+      background: #f8f8fb; border: 1.5px solid var(--border);
+      border-bottom: none; border-radius: var(--radius-input) var(--radius-input) 0 0;
+    }
+    .toolbar-btn {
+      padding: .25rem .625rem; border-radius: 4px; font-size: .75rem; font-weight: 600;
+      cursor: pointer; border: 1px solid var(--border); background: var(--surface);
+      color: var(--text); transition: all var(--transition);
+    }
+    .toolbar-btn:hover { background: #ede8ff; border-color: var(--primary); color: var(--primary); }
+    .toolbar-sep { width: 1px; background: var(--border); margin: .1rem .25rem; }
+
+    .body-textarea {
+      width: 100%; min-height: 140px; padding: .75rem 1rem;
+      border: 1.5px solid var(--border); border-top: none;
+      border-radius: 0 0 var(--radius-input) var(--radius-input);
+      font-family: var(--font-ui); font-size: .875rem; resize: vertical;
+      background: var(--surface); color: var(--text); line-height: 1.65;
+    }
+    .body-textarea:focus { outline: none; border-color: var(--primary); }
+
+    .wait-row {
+      display: flex; align-items: center; gap: .75rem; margin-top: .875rem;
+    }
+    .wait-row .form-input { width: 80px; text-align: center; }
+
+    /* A/B panel */
+    .ab-panel {
+      margin-top: 1rem; padding: 1rem; background: #f8f7ff;
+      border: 1.5px dashed var(--primary-lt); border-radius: var(--radius-input);
+    }
+    .ab-header {
+      display: flex; align-items: center; justify-content: space-between; margin-bottom: .875rem;
+    }
+    .ab-variant-label {
+      display: inline-flex; align-items: center; gap: .375rem;
+      font-size: .8rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+    }
+    .ab-variant-label.a { color: var(--primary); }
+    .ab-variant-label.b { color: #e17055; }
+    .ab-weight-row {
+      display: flex; align-items: center; gap: .75rem; margin-bottom: .875rem;
+    }
+    .ab-weight-row input[type=range] {
+      flex: 1; accent-color: var(--primary);
+    }
+    .weight-display {
+      font-size: .8125rem; font-weight: 700; color: var(--primary); min-width: 60px; text-align: center;
+    }
+
+    /* Add step button */
+    .add-step-btn {
+      display: flex; align-items: center; gap: .625rem; padding: .75rem 1rem;
+      border: 2px dashed var(--border); border-radius: var(--radius-card);
+      color: var(--muted); cursor: pointer; font-size: .875rem; font-weight: 600;
+      background: transparent; width: 100%; margin-top: .5rem;
+      transition: all var(--transition); margin-left: 56px;
+    }
+    .add-step-btn:hover {
+      border-color: var(--primary); color: var(--primary); background: #f4f1ff;
+    }
+
+    /* Preview modal */
+    .preview-email {
+      background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-input);
+      padding: 1.5rem; font-family: Georgia, serif; font-size: .9375rem; line-height: 1.8;
+    }
+    .preview-subject {
+      font-weight: 700; font-size: 1.0625rem; margin-bottom: 1.25rem;
+      padding-bottom: .875rem; border-bottom: 1px solid var(--border);
+    }
+
+    /* ── CSV column mapper ───────────────── */
+    .drop-zone {
+      border: 2px dashed var(--border); border-radius: var(--radius-card);
+      padding: 2.5rem; text-align: center; cursor: pointer;
+      transition: all var(--transition); background: var(--surface);
+    }
+    .drop-zone:hover, .drop-zone.drag-over {
+      border-color: var(--primary); background: #f4f1ff;
+    }
+    .drop-zone-icon { font-size: 2rem; margin-bottom: .75rem; }
+    .drop-zone-label { font-size: .9375rem; font-weight: 600; color: var(--text); }
+    .drop-zone-sub   { font-size: .8125rem; color: var(--muted); margin-top: .25rem; }
+
+    .col-mapper { margin-top: 1.25rem; }
+    .col-map-row {
+      display: flex; align-items: center; gap: .875rem; padding: .625rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .col-map-row:last-child { border-bottom: none; }
+    .col-csv  { width: 160px; font-size: .875rem; font-weight: 600; color: var(--text); }
+    .col-arrow { color: var(--muted); }
+    .col-field { flex: 1; }
+
+    .lead-preview-table { margin-top: 1rem; }
+
+    /* ── Review step ─────────────────────── */
+    .review-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;
+    }
+    .review-item {
+      background: #f8f7ff; border: 1px solid #e0d9ff; border-radius: var(--radius-input);
+      padding: 1rem; display: flex; flex-direction: column; gap: .25rem;
+    }
+    .review-item-label { font-size: .75rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+    .review-item-val   { font-size: 1.0625rem; font-weight: 700; color: var(--text); }
+    .review-item-sub   { font-size: .75rem; color: var(--muted); }
+    .timeline-estimate {
+      display: flex; align-items: center; gap: .5rem; padding: 1rem;
+      background: #d4f5ed; border-radius: var(--radius-input);
+      font-size: .875rem; color: #00856d; font-weight: 600; margin-bottom: 1.5rem;
+    }
+
+    /* ── Detail page tabs ────────────────── */
+    .detail-tabs {
+      display: flex; border-bottom: 2px solid var(--border); margin-bottom: 1.5rem; gap: 0;
+    }
+    .detail-tab {
+      padding: .75rem 1.25rem; font-size: .875rem; font-weight: 600;
+      color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent;
+      margin-bottom: -2px; transition: all var(--transition); white-space: nowrap;
+    }
+    .detail-tab.active  { color: var(--primary); border-bottom-color: var(--primary); }
+    .detail-tab:hover:not(.active) { color: var(--text); }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    /* ── Line chart ──────────────────────── */
+    .chart-wrap {
+      position: relative; width: 100%; overflow: hidden;
+    }
+    .chart-legend {
+      display: flex; gap: 1.25rem; flex-wrap: wrap; margin-bottom: .875rem;
+    }
+    .legend-item {
+      display: flex; align-items: center; gap: .375rem;
+      font-size: .8rem; font-weight: 600; cursor: pointer; user-select: none;
+    }
+    .legend-dot {
+      width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+    }
+
+    /* A/B significance bar */
+    .sig-bar {
+      height: 10px; border-radius: 99px; background: var(--border); overflow: hidden; margin: .5rem 0;
+    }
+    .sig-fill { height: 100%; border-radius: 99px; transition: width .6s ease; }
+
+    /* ── Leads tab ───────────────────────── */
+    .lead-status-filter {
+      display: flex; gap: .5rem; margin-bottom: 1rem; flex-wrap: wrap;
+    }
+
+    /* Sequence step metrics badge row */
+    .step-metrics {
+      display: flex; gap: .75rem; flex-wrap: wrap; margin-top: .625rem;
+    }
+    .step-metric {
+      display: flex; flex-direction: column; align-items: center;
+      padding: .5rem .875rem; background: var(--bg); border-radius: var(--radius-input);
+      border: 1px solid var(--border); min-width: 80px;
+    }
+    .step-metric-val   { font-size: 1rem; font-weight: 700; color: var(--text); }
+    .step-metric-label { font-size: .65rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-top: .125rem; }
+  </style>
+</head>
+<body>
+
+<!-- ── Sidebar ─────────────────────────────────────────────── -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-mark">W</div>
+    <span class="logo-text">Warmr</span>
+  </div>
+  <div style="padding:.75rem 0;flex:1">
+    <div class="sidebar-section-label">Overzicht</div>
+    <a class="nav-link" href="dashboard.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+      Dashboard
+    </a>
+    <div class="sidebar-section-label">Campagnes</div>
+    <a class="nav-link active" href="campaigns.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 9.8 19.79 19.79 0 0112 4.18a2 2 0 012 2V8"/></svg>
+      Campagnes
+    </a>
+    <a class="nav-link" href="campaigns.html" onclick="showView('leads');return false">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+      Leads
+    </a>
+    <div class="sidebar-section-label">Infrastructuur</div>
+    <a class="nav-link" href="inboxes.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+      Inboxes
+    </a>
+    <a class="nav-link" href="domains.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>
+      Domeinen
+    </a>
+    <div class="sidebar-section-label">Account</div>
+    <a class="nav-link" href="settings.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+      Instellingen
+    </a>
+  </div>
+  <div class="sidebar-footer">
+    <div style="display:flex;align-items:center;gap:.75rem">
+      <div class="avatar avatar-sm" id="sidebar-avatar">?</div>
+      <div style="flex:1;min-width:0">
+        <div class="text-sm font-semi truncate" id="sidebar-name">Laden…</div>
+      </div>
+      <button class="btn-icon" onclick="logout()" title="Uitloggen">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      </button>
+    </div>
+  </div>
+</aside>
+
+<!-- ── Topbar ──────────────────────────────────────────────── -->
+<header class="topbar">
+  <div class="topbar-left">
+    <h1 style="font-size:1.25rem;font-family:var(--font-disp);font-weight:400" id="topbar-title">Campagnes</h1>
+  </div>
+  <div class="topbar-right">
+    <div id="topbar-client" style="display:flex;align-items:center;gap:.625rem;cursor:pointer">
+      <div class="avatar avatar-sm">?</div>
+      <span class="text-sm font-semi client-name">—</span>
+    </div>
+  </div>
+</header>
+
+<!-- ── Main ────────────────────────────────────────────────── -->
+<div class="main-layout">
+<div class="main-content">
+<div class="page">
+
+<!-- ════════════════════════════════════════════════════════════
+     VIEW 1 — Campaign list
+════════════════════════════════════════════════════════════ -->
+<div class="view active" id="view-list">
+  <div class="page-header">
+    <div>
+      <h2 class="page-title">Campagnes</h2>
+      <p class="page-sub">Beheer je outbound e-mailcampagnes</p>
+    </div>
+    <button class="btn btn-primary" onclick="showBuilder()">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Nieuwe campagne
+    </button>
+  </div>
+
+  <div class="filter-bar">
+    <div class="filter-chip active" data-filter="all" onclick="filterCampaigns('all',this)">Alle</div>
+    <div class="filter-chip" data-filter="active" onclick="filterCampaigns('active',this)">Actief</div>
+    <div class="filter-chip" data-filter="draft" onclick="filterCampaigns('draft',this)">Concept</div>
+    <div class="filter-chip" data-filter="paused" onclick="filterCampaigns('paused',this)">Gepauzeerd</div>
+    <div class="filter-chip" data-filter="completed" onclick="filterCampaigns('completed',this)">Afgerond</div>
+    <div style="margin-left:auto">
+      <input class="form-input" id="search-camps" style="width:220px;font-size:.875rem;padding:.4rem .8rem" placeholder="Zoek campagne…" oninput="renderCampaignTable()">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="table-wrapper">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Campagne</th>
+            <th>Status</th>
+            <th>Leads</th>
+            <th>Open rate</th>
+            <th>Reply rate</th>
+            <th>Bounce rate</th>
+            <th>Aangemaakt</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="campaign-tbody">
+          <tr><td colspan="8" style="padding:2rem;text-align:center">
+            <div class="skeleton" style="height:16px;max-width:300px;margin:0 auto"></div>
+          </td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div><!-- /view-list -->
+
+
+<!-- ════════════════════════════════════════════════════════════
+     VIEW 2 — Campaign builder
+════════════════════════════════════════════════════════════ -->
+<div class="view" id="view-builder">
+  <div class="page-header">
+    <div style="display:flex;align-items:center;gap:1rem">
+      <button class="btn btn-ghost btn-sm" onclick="showView('list')">← Terug</button>
+      <div>
+        <h2 class="page-title" id="builder-title">Nieuwe campagne</h2>
+        <p class="page-sub">Stel je campagne stap voor stap in</p>
+      </div>
+    </div>
+    <div style="display:flex;gap:.75rem">
+      <button class="btn btn-ghost" onclick="saveDraft()">Opslaan als concept</button>
+    </div>
+  </div>
+
+  <!-- Builder wizard progress -->
+  <div class="wizard-progress" id="builder-wizard-progress" style="margin-bottom:2rem;max-width:820px;margin-left:auto;margin-right:auto"></div>
+
+  <div class="builder-shell">
+
+    <!-- ── Builder step 1: Settings ─────── -->
+    <div class="builder-step active" id="bs-1">
+      <div class="step-section">
+        <div class="step-section-title">Campagneinstellingen</div>
+        <div class="two-col">
+          <div class="form-group">
+            <label class="form-label">Campagnenaam <span style="color:var(--danger)">*</span></label>
+            <input id="b-name" class="form-input" placeholder="BENELUX SaaS Q2 2026">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Taal</label>
+            <select id="b-lang" class="form-select">
+              <option value="nl">🇳🇱 Nederlands</option>
+              <option value="en">🇬🇧 Engels</option>
+              <option value="fr">🇫🇷 Frans</option>
+            </select>
+          </div>
+        </div>
+        <div class="two-col" style="margin-top:1rem">
+          <div class="form-group">
+            <label class="form-label">Dagelijks limiet (e-mails)</label>
+            <input id="b-daily" class="form-input" type="number" value="50" min="1" max="500">
+            <span class="form-hint">Max. e-mails per dag voor alle inboxes samen</span>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Bounce drempel</label>
+            <div style="display:flex;align-items:center;gap:.5rem">
+              <input id="b-bounce-pct" class="form-input" type="number" value="3" min="1" max="20" style="width:80px"> <span class="text-muted">%</span>
+            </div>
+            <span class="form-hint">Campagne auto-pauseert boven dit percentage</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="step-section">
+        <div class="step-section-title">Verzendvenster</div>
+        <div class="two-col">
+          <div class="form-group">
+            <label class="form-label">Begintijd</label>
+            <input id="b-start" class="form-input" type="time" value="08:00">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Eindtijd</label>
+            <input id="b-end" class="form-input" type="time" value="17:00">
+          </div>
+        </div>
+        <div class="form-group" style="margin-top:1rem">
+          <label class="form-label">Verzenddagen</label>
+          <div class="days-grid">
+            <div class="day-chip active" data-day="1" onclick="toggleDay(this)">Ma</div>
+            <div class="day-chip active" data-day="2" onclick="toggleDay(this)">Di</div>
+            <div class="day-chip active" data-day="3" onclick="toggleDay(this)">Wo</div>
+            <div class="day-chip active" data-day="4" onclick="toggleDay(this)">Do</div>
+            <div class="day-chip active" data-day="5" onclick="toggleDay(this)">Vr</div>
+            <div class="day-chip" data-day="6" onclick="toggleDay(this)">Za</div>
+            <div class="day-chip" data-day="7" onclick="toggleDay(this)">Zo</div>
+          </div>
+        </div>
+        <div class="form-group" style="margin-top:1rem">
+          <label class="form-label">Tijdzone</label>
+          <select id="b-tz" class="form-select">
+            <option value="Europe/Amsterdam">Europe/Amsterdam (CET/CEST)</option>
+            <option value="Europe/Brussels">Europe/Brussels</option>
+            <option value="UTC">UTC</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="step-section">
+        <div class="step-section-title">Gedragsopties</div>
+        <div class="toggle-row">
+          <div>
+            <div class="toggle-label">Stop bij reply</div>
+            <div class="toggle-sub">Lead uit de sequence halen zodra ze antwoorden</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="b-stop-reply" checked>
+            <div class="toggle-track"></div>
+            <div class="toggle-thumb"></div>
+          </label>
+        </div>
+        <div class="toggle-row">
+          <div>
+            <div class="toggle-label">Stop bij unsubscribe</div>
+            <div class="toggle-sub">Direct stoppen bij unsubscribe-verzoek</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="b-stop-unsub" checked>
+            <div class="toggle-track"></div>
+            <div class="toggle-thumb"></div>
+          </label>
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:flex-end;margin-top:1rem">
+        <button class="btn btn-primary" onclick="builderNext()">
+          Volgende: E-mail sequence →
+        </button>
+      </div>
+    </div><!-- /bs-1 -->
+
+    <!-- ── Builder step 2: Sequence ─────── -->
+    <div class="builder-step" id="bs-2">
+      <div class="step-section">
+        <div class="step-section-title">E-mail sequence</div>
+        <p class="text-sm text-muted" style="margin-bottom:1.25rem">
+          Voeg e-mailstappen toe. Gebruik <code style="background:#f4f1ff;color:var(--primary);padding:.1rem .35rem;border-radius:4px">{{first_name}}</code> voor personalisatie en <code style="background:#f4f1ff;color:var(--primary);padding:.1rem .35rem;border-radius:4px">{optie A|optie B}</code> voor spintax.
+        </p>
+
+        <div class="sequence-timeline" id="sequence-container"></div>
+
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+          <button class="add-step-btn" onclick="addSequenceStep()" style="flex:1;min-width:200px">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Stap toevoegen
+          </button>
+          <button class="add-step-btn" onclick="openAiWriter()" style="flex:1;min-width:200px;background:linear-gradient(135deg,#a29bfe22,#6c5ce722);border-color:var(--primary-lt);color:var(--primary)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 2L9.5 8.5L3 11L9.5 13.5L12 20L14.5 13.5L21 11L14.5 8.5L12 2z"/></svg>
+            AI sequence schrijver
+          </button>
+          <button class="add-step-btn" onclick="openTemplatePicker()" style="flex:1;min-width:200px">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            Template kiezen
+          </button>
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;margin-top:1rem">
+        <button class="btn btn-ghost" onclick="builderPrev()">← Terug</button>
+        <button class="btn btn-primary" onclick="builderNext()">Volgende: Leads toevoegen →</button>
+      </div>
+    </div><!-- /bs-2 -->
+
+    <!-- ── Builder step 3: Leads ─────────── -->
+    <div class="builder-step" id="bs-3">
+      <div class="step-section">
+        <div class="step-section-title">Leads importeren</div>
+        <p class="text-sm text-muted" style="margin-bottom:1.25rem">
+          Upload een CSV-bestand. Verplichte kolom: <strong>email</strong>. Optioneel: first_name, last_name, company, job_title, custom velden.
+        </p>
+
+        <div class="drop-zone" id="drop-zone" onclick="document.getElementById('csv-file').click()">
+          <div class="drop-zone-icon">📂</div>
+          <div class="drop-zone-label">Klik of sleep een CSV-bestand hier</div>
+          <div class="drop-zone-sub">Maximaal 50.000 leads per upload · UTF-8 · komma of puntkomma als scheidingsteken</div>
+          <input type="file" id="csv-file" accept=".csv" style="display:none" onchange="handleCsvUpload(this.files[0])">
+        </div>
+
+        <div id="csv-result" style="display:none;margin-top:1.25rem">
+          <div id="csv-stats" class="info-box" style="background:#d4f5ed;border-color:#a0e0d0;color:#00856d;margin-bottom:1rem"></div>
+
+          <div class="col-mapper" id="col-mapper-wrap" style="display:none">
+            <div class="step-section-title" style="font-size:.875rem">Kolom mapping</div>
+            <div id="col-mapper-rows"></div>
+          </div>
+
+          <div class="lead-preview-table" id="lead-preview-wrap">
+            <div style="font-size:.875rem;font-weight:700;margin-bottom:.625rem;color:var(--text)">Voorbeeld (eerste 5 rijen)</div>
+            <div class="table-wrapper">
+              <table class="data-table" id="lead-preview-table">
+                <thead id="lead-preview-head"></thead>
+                <tbody id="lead-preview-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;margin-top:1rem">
+        <button class="btn btn-ghost" onclick="builderPrev()">← Terug</button>
+        <div style="display:flex;gap:.75rem">
+          <button class="btn btn-ghost" onclick="builderNext()">Overslaan →</button>
+          <button class="btn btn-primary" onclick="builderNext()" id="btn-leads-next">Volgende: Review →</button>
+        </div>
+      </div>
+    </div><!-- /bs-3 -->
+
+    <!-- ── Builder step 4: Review ─────────── -->
+    <div class="builder-step" id="bs-4">
+      <div class="step-section">
+        <div class="step-section-title">Samenvatting</div>
+
+        <div class="review-grid" id="review-grid"></div>
+
+        <div class="timeline-estimate" id="timeline-estimate">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          <span id="timeline-text">Berekenen…</span>
+        </div>
+
+        <div id="review-sequence-preview"></div>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;margin-top:1rem">
+        <button class="btn btn-ghost" onclick="builderPrev()">← Terug</button>
+        <div style="display:flex;gap:.75rem">
+          <button class="btn btn-secondary" id="btn-save-draft" onclick="saveCampaign('draft')">Opslaan als concept</button>
+          <button class="btn btn-primary" id="btn-activate" onclick="saveCampaign('active')">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Direct activeren
+          </button>
+        </div>
+      </div>
+    </div><!-- /bs-4 -->
+
+  </div><!-- /builder-shell -->
+</div><!-- /view-builder -->
+
+
+<!-- ════════════════════════════════════════════════════════════
+     VIEW 3 — Campaign detail
+════════════════════════════════════════════════════════════ -->
+<div class="view" id="view-detail">
+  <div class="page-header">
+    <div style="display:flex;align-items:center;gap:1rem">
+      <button class="btn btn-ghost btn-sm" onclick="showView('list')">← Terug</button>
+      <div>
+        <h2 class="page-title" id="detail-name">Campagne</h2>
+        <div style="display:flex;align-items:center;gap:.625rem;margin-top:.25rem">
+          <span id="detail-status-badge"></span>
+          <span class="text-sm text-muted" id="detail-meta"></span>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;gap:.75rem">
+      <select class="form-select" id="detail-range" style="width:auto;font-size:.8125rem;padding:.4rem .8rem" onchange="loadDetailAnalytics()">
+        <option value="7">7 dagen</option>
+        <option value="30" selected>30 dagen</option>
+        <option value="90">90 dagen</option>
+      </select>
+      <button class="btn btn-secondary btn-sm" id="detail-pause-btn" onclick="toggleCampaignStatus()">Pauzeren</button>
+      <button class="btn btn-danger btn-sm" onclick="deleteCampaign()">Verwijderen</button>
+    </div>
+  </div>
+
+  <!-- Stats row -->
+  <div class="stats-grid" id="detail-stats-grid" style="margin-bottom:1.5rem"></div>
+
+  <!-- Tabs -->
+  <div class="detail-tabs">
+    <div class="detail-tab active" data-tab="analytics" onclick="switchDetailTab('analytics')">Analytics</div>
+    <div class="detail-tab" data-tab="sequence" onclick="switchDetailTab('sequence')">Sequence</div>
+    <div class="detail-tab" data-tab="ab" onclick="switchDetailTab('ab')">A/B Test</div>
+    <div class="detail-tab" data-tab="leads" onclick="switchDetailTab('leads')">Leads</div>
+    <div class="detail-tab" data-tab="settings" onclick="switchDetailTab('settings')">Instellingen</div>
+  </div>
+
+  <!-- Analytics tab -->
+  <div class="tab-content active" id="tab-analytics">
+    <div class="card" style="margin-bottom:1.5rem">
+      <div class="card-header">
+        <span style="font-weight:700">Prestaties over tijd</span>
+      </div>
+      <div class="card-body">
+        <div class="chart-legend" id="chart-legend"></div>
+        <div class="chart-wrap" id="chart-wrap">
+          <div class="skeleton" style="height:240px;border-radius:var(--radius-input)"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sequence tab -->
+  <div class="tab-content" id="tab-sequence">
+    <div id="seq-steps-list"></div>
+  </div>
+
+  <!-- A/B tab -->
+  <div class="tab-content" id="tab-ab">
+    <div id="ab-results-wrap"></div>
+  </div>
+
+  <!-- Leads tab -->
+  <div class="tab-content" id="tab-leads">
+    <div class="lead-status-filter" id="lead-status-filter">
+      <div class="filter-chip active" data-lstatus="all" onclick="filterLeads('all',this)">Alle</div>
+      <div class="filter-chip" data-lstatus="new" onclick="filterLeads('new',this)">Nieuw</div>
+      <div class="filter-chip" data-lstatus="contacted" onclick="filterLeads('contacted',this)">Gecontacteerd</div>
+      <div class="filter-chip" data-lstatus="replied" onclick="filterLeads('replied',this)">Geantwoord</div>
+      <div class="filter-chip" data-lstatus="bounced" onclick="filterLeads('bounced',this)">Bounced</div>
+      <div class="filter-chip" data-lstatus="unsubscribed" onclick="filterLeads('unsubscribed',this)">Uitgeschreven</div>
+    </div>
+    <div class="card">
+      <div class="table-wrapper">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>E-mail</th><th>Naam</th><th>Bedrijf</th><th>Status</th><th>Stap</th><th>Volgende send</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="leads-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings tab -->
+  <div class="tab-content" id="tab-settings">
+    <div class="card"><div class="card-body">
+      <p class="text-muted text-sm">Campagne-instellingen bewerken (naam, verzendvenster, limieten) — binnenkort beschikbaar.</p>
+      <button class="btn btn-secondary" style="margin-top:1rem" onclick="showBuilder()">
+        Nieuw heropbouwen
+      </button>
+    </div></div>
+  </div>
+</div><!-- /view-detail -->
+
+
+<!-- ════════════════════════════════════════════════════════════
+     Modals
+════════════════════════════════════════════════════════════ -->
+
+<!-- Email preview modal -->
+<div class="modal-overlay" id="preview-modal" style="display:none" onclick="if(event.target===this)closePreview()">
+  <div class="modal" style="max-width:600px">
+    <div class="modal-header">
+      <h4>E-mail preview</h4>
+      <button class="btn-icon" onclick="closePreview()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <p class="text-xs text-muted" style="margin-bottom:.875rem">Weergave met voorbeelddata: Jan de Vries · Acme B.V.</p>
+      <div class="preview-email">
+        <div class="preview-subject" id="preview-subject"></div>
+        <div id="preview-body" style="white-space:pre-wrap"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closePreview()">Sluiten</button>
+    </div>
+  </div>
+</div>
+
+</div><!-- /page -->
+</div><!-- /main-content -->
+</div><!-- /main-layout -->
+
+<div id="toast-container"></div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+<script>
+// ════════════════════════════════════════════════════════════
+// State
+// ════════════════════════════════════════════════════════════
+let _campaigns = [];
+let _campaignFilter = 'all';
+let _currentCampaignId = null;
+let _builderStep = 1;
+let _seqSteps = [];   // [{id, subject, body, wait_days, is_reply, ab_enabled, ab_subject_b, ab_body_b, ab_weight}]
+let _csvLeads = [];
+let _csvHeaders = [];
+let _colMapping = {};
+let _currentLeads = [];
+let _currentLeadStatus = 'all';
+const BUILDER_STEPS = ['Instellingen', 'Sequence', 'Leads', 'Review'];
+
+const SAMPLE_LEAD = {
+  first_name: 'Jan', last_name: 'de Vries', company: 'Acme B.V.',
+  email: 'jan@acme.nl', job_title: 'Marketing Manager', domain: 'acme.nl',
+  custom_fields: { revenue: '5M', pain: 'deliverability' },
+};
+
+// ════════════════════════════════════════════════════════════
+// Init
+// ════════════════════════════════════════════════════════════
+(async () => {
+  await requireAuth();
+  await populateTopbar();
+  populateSidebarUser();
+
+  // URL hash routing
+  const hash = window.location.hash;
+  if (hash === '#new') showBuilder();
+  else if (hash === '#leads') { loadCampaigns(); setTimeout(() => { const el = document.getElementById('view-leads'); if (el) el.scrollIntoView(); }, 500); }
+  else if (hash.startsWith('#detail-')) openDetail(hash.slice(8));
+  else if (hash.startsWith('#detail:')) openDetail(hash.slice(8));
+  else loadCampaigns();
+})();
+
+function populateSidebarUser() {
+  _supabase.auth.getUser().then(({ data: { user } }) => {
+    if (!user) return;
+    const e = user.email || '';
+    document.getElementById('sidebar-avatar').textContent = e.slice(0,2).toUpperCase();
+    document.getElementById('sidebar-name').textContent = e.split('@')[0];
+  });
+}
+
+// ════════════════════════════════════════════════════════════
+// View router
+// ════════════════════════════════════════════════════════════
+function showView(name) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.getElementById('view-' + name).classList.add('active');
+  const titles = { list: 'Campagnes', builder: 'Campagne bouwen', detail: 'Campagne' };
+  document.getElementById('topbar-title').textContent = titles[name] || 'Campagnes';
+  if (name === 'list') loadCampaigns();
+}
+
+// ════════════════════════════════════════════════════════════
+// Campaign list
+// ════════════════════════════════════════════════════════════
+async function loadCampaigns() {
+  try {
+    _campaigns = await api('/campaigns');
+    renderCampaignTable();
+  } catch (e) {
+    toast('Campagnes laden mislukt: ' + e.message, 'error');
+  }
+}
+
+function filterCampaigns(f, el) {
+  _campaignFilter = f;
+  document.querySelectorAll('.filter-chip[data-filter]').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  renderCampaignTable();
+}
+
+const STATUS_BADGE = {
+  active:    '<span class="badge badge-success badge-dot">Actief</span>',
+  draft:     '<span class="badge badge-muted badge-dot">Concept</span>',
+  paused:    '<span class="badge badge-warning badge-dot">Gepauzeerd</span>',
+  completed: '<span class="badge badge-info badge-dot">Afgerond</span>',
+};
+
+function renderCampaignTable() {
+  const search = (document.getElementById('search-camps').value || '').toLowerCase();
+  const rows = _campaigns.filter(c => {
+    if (_campaignFilter !== 'all' && c.status !== _campaignFilter) return false;
+    if (search && !c.name.toLowerCase().includes(search)) return false;
+    return true;
+  });
+
+  const tbody = document.getElementById('campaign-tbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="8">
+      <div class="empty-state">
+        <div class="empty-state-icon">📣</div>
+        <h3>Geen campagnes${_campaignFilter !== 'all' ? ' met status "' + _campaignFilter + '"' : ''}</h3>
+        <p class="text-sm">Maak je eerste campagne aan om te starten.</p>
+        <button class="btn btn-primary btn-sm" style="margin-top:.875rem" onclick="showBuilder()">+ Nieuwe campagne</button>
+      </div>
+    </td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = rows.map(c => {
+    // metrics from the campaign object if available, otherwise show dashes
+    const m = c.metrics || {};
+    return `
+    <tr>
+      <td>
+        <div class="font-semi" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${c.name}">${c.name}</div>
+        <div class="text-xs text-muted">${c.language?.toUpperCase() || 'NL'} · ${c.daily_limit || 50}/dag</div>
+      </td>
+      <td>${STATUS_BADGE[c.status] || STATUS_BADGE.draft}</td>
+      <td>${fmtNum(m.total_leads ?? '—')}</td>
+      <td>${fmtRate(m.open_rate ?? null)}</td>
+      <td>${fmtRate(m.reply_rate ?? null)}</td>
+      <td class="${(m.bounce_rate||0) > 0.03 ? 'text-danger font-semi' : ''}">${fmtRate(m.bounce_rate ?? null)}</td>
+      <td class="text-sm text-muted">${formatDate(c.created_at)}</td>
+      <td>
+        <div class="campaign-row-actions">
+          <button class="btn btn-ghost btn-sm" onclick="openDetail('${c.id}')">Bekijken</button>
+          <button class="btn btn-secondary btn-sm" onclick="openDetail('${c.id}')">Stats</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+// ════════════════════════════════════════════════════════════
+// Campaign builder
+// ════════════════════════════════════════════════════════════
+function showBuilder() {
+  _builderStep = 1;
+  _seqSteps = [];
+  _csvLeads = [];
+  addSequenceStep(); // start with one step
+  renderBuilderProgress();
+  showBuilderStep(1);
+  showView('builder');
+}
+
+function renderBuilderProgress() {
+  const container = document.getElementById('builder-wizard-progress');
+  let html = '';
+  for (let i = 1; i <= 4; i++) {
+    const state = i < _builderStep ? 'done' : i === _builderStep ? 'active' : '';
+    const icon = i < _builderStep
+      ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>`
+      : i;
+    html += `<div class="wizard-step ${state}"><div class="wizard-step-num">${icon}</div><span class="wizard-step-label">${BUILDER_STEPS[i-1]}</span></div>`;
+    if (i < 4) html += `<div class="wizard-connector ${i < _builderStep ? 'done' : ''}"></div>`;
+  }
+  container.innerHTML = html;
+}
+
+function showBuilderStep(n) {
+  document.querySelectorAll('.builder-step').forEach(s => s.classList.remove('active'));
+  document.getElementById('bs-' + n).classList.add('active');
+  if (n === 4) buildReview();
+}
+
+function builderNext() {
+  if (_builderStep === 1 && !validateStep1()) return;
+  if (_builderStep === 2 && !validateStep2()) return;
+  if (_builderStep < 4) {
+    _builderStep++;
+    renderBuilderProgress();
+    showBuilderStep(_builderStep);
+  }
+}
+function builderPrev() {
+  if (_builderStep > 1) {
+    _builderStep--;
+    renderBuilderProgress();
+    showBuilderStep(_builderStep);
+  }
+}
+
+function validateStep1() {
+  const name = document.getElementById('b-name').value.trim();
+  if (!name) { toast('Voer een campagnenaam in.', 'warning'); document.getElementById('b-name').focus(); return false; }
+  const days = document.querySelectorAll('.day-chip.active');
+  if (!days.length) { toast('Selecteer minimaal één verzenddag.', 'warning'); return false; }
+  return true;
+}
+function validateStep2() {
+  if (!_seqSteps.length) { toast('Voeg minimaal één e-mailstap toe.', 'warning'); return false; }
+  const incomplete = _seqSteps.some(s => !s.subject.trim() || !s.body.trim());
+  if (incomplete) { toast('Vul subject en body in voor elke stap.', 'warning'); return false; }
+  return true;
+}
+
+function getBuilderConfig() {
+  const days = [...document.querySelectorAll('.day-chip.active')].map(d => d.dataset.day).join(',');
+  return {
+    name: document.getElementById('b-name').value.trim(),
+    language: document.getElementById('b-lang').value,
+    daily_limit: parseInt(document.getElementById('b-daily').value, 10) || 50,
+    bounce_threshold: (parseFloat(document.getElementById('b-bounce-pct').value) || 3) / 100,
+    send_window_start: document.getElementById('b-start').value,
+    send_window_end: document.getElementById('b-end').value,
+    send_days: days,
+    timezone: document.getElementById('b-tz').value,
+    stop_on_reply: document.getElementById('b-stop-reply').checked,
+    stop_on_unsubscribe: document.getElementById('b-stop-unsub').checked,
+  };
+}
+
+// ── Send days toggle ──────────────────────────────────────
+function toggleDay(el) { el.classList.toggle('active'); }
+
+// ════════════════════════════════════════════════════════════
+// Sequence steps
+// ════════════════════════════════════════════════════════════
+let _stepIdCounter = 0;
+
+function addSequenceStep() {
+  const id = ++_stepIdCounter;
+  _seqSteps.push({ id, subject: '', body: '', wait_days: 3, is_reply: false, ab_enabled: false, ab_subject_b: '', ab_body_b: '', ab_weight: 50 });
+  renderSequence();
+}
+
+function removeSequenceStep(id) {
+  if (_seqSteps.length <= 1) { toast('Je hebt minimaal één stap nodig.', 'warning'); return; }
+  _seqSteps = _seqSteps.filter(s => s.id !== id);
+  renderSequence();
+}
+
+function renderSequence() {
+  const container = document.getElementById('sequence-container');
+  container.innerHTML = _seqSteps.map((step, idx) => {
+    const num = idx + 1;
+    const isFirst = idx === 0;
+    return `
+    <div class="seq-step-wrap" data-step-id="${step.id}">
+      <div class="seq-step-num">${num}</div>
+      <div class="seq-step-card">
+        <div class="seq-step-header">
+          <span class="seq-step-title">Stap ${num}${isFirst ? '' : ` · na ${step.wait_days} dag${step.wait_days !== 1 ? 'en' : ''}`}</span>
+          <div class="seq-step-actions">
+            <button class="toolbar-btn" onclick="previewStep(${step.id})" title="Preview">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              Preview
+            </button>
+            ${!isFirst ? `<button class="toolbar-btn" onclick="toggleReplyThread(${step.id})" id="reply-btn-${step.id}" ${step.is_reply ? 'style="background:#ede8ff;border-color:var(--primary);color:var(--primary)"' : ''}>↩ Thread</button>` : ''}
+            <button class="toolbar-btn ${step.ab_enabled ? 'active' : ''}" onclick="toggleAB(${step.id})" id="ab-btn-${step.id}" ${step.ab_enabled ? 'style="background:#ede8ff;border-color:var(--primary);color:var(--primary)"' : ''}>A/B</button>
+            ${_seqSteps.length > 1 ? `<button class="toolbar-btn" onclick="removeSequenceStep(${step.id})" style="color:var(--danger)" title="Verwijderen">×</button>` : ''}
+          </div>
+        </div>
+
+        <!-- Variant A (always shown) -->
+        <div class="${step.ab_enabled ? '' : ''}">
+          ${step.ab_enabled ? '<div class="ab-variant-label a">▲ Variant A</div>' : ''}
+          <div class="form-group" style="margin-bottom:.75rem">
+            <label class="form-label" style="display:flex;align-items:center;justify-content:space-between">
+              Onderwerp
+              <button class="toolbar-btn" onclick="aiOptimizeSubject(${step.id})" style="font-size:.7rem;color:var(--primary)" title="AI subject varianten genereren">✦ AI optimize</button>
+            </label>
+            <input class="form-input" id="subject-a-${step.id}" value="${_esc(step.subject)}" placeholder="Hoi {{first_name}}, vraagje…"
+              oninput="_seqSteps.find(s=>s.id===${step.id}).subject=this.value">
+          </div>
+          <div>
+            <div class="body-toolbar">
+              ${VARS.map(v => `<button class="toolbar-btn" onclick="insertVar(${step.id},'a','${v.v}')">${v.l}</button>`).join('')}
+              <div class="toolbar-sep"></div>
+              <button class="toolbar-btn" onclick="wrapSpintax(${step.id},'a')">{A|B}</button>
+            </div>
+            <textarea class="body-textarea" id="body-a-${step.id}" placeholder="Schrijf je e-mailtekst hier…"
+              oninput="_seqSteps.find(s=>s.id===${step.id}).body=this.value">${_esc(step.body)}</textarea>
+          </div>
+        </div>
+
+        <!-- Variant B (only if AB enabled) -->
+        ${step.ab_enabled ? `
+        <div class="ab-panel" id="ab-panel-${step.id}">
+          <div class="ab-header">
+            <div class="ab-variant-label b">▼ Variant B</div>
+          </div>
+          <div class="ab-weight-row">
+            <span class="text-xs text-muted">A</span>
+            <input type="range" min="10" max="90" value="${step.ab_weight}" id="ab-weight-${step.id}"
+              oninput="updateABWeight(${step.id},this.value)">
+            <span class="text-xs text-muted">B</span>
+            <span class="weight-display" id="ab-weight-display-${step.id}">A: ${step.ab_weight}% · B: ${100-step.ab_weight}%</span>
+          </div>
+          <div class="form-group" style="margin-bottom:.75rem">
+            <label class="form-label">Onderwerp B</label>
+            <input class="form-input" value="${_esc(step.ab_subject_b)}" placeholder="Alternatief onderwerp…"
+              oninput="_seqSteps.find(s=>s.id===${step.id}).ab_subject_b=this.value">
+          </div>
+          <div>
+            <div class="body-toolbar">
+              ${VARS.map(v => `<button class="toolbar-btn" onclick="insertVar(${step.id},'b','${v.v}')">${v.l}</button>`).join('')}
+              <div class="toolbar-sep"></div>
+              <button class="toolbar-btn" onclick="wrapSpintax(${step.id},'b')">{A|B}</button>
+            </div>
+            <textarea class="body-textarea" id="body-b-${step.id}" placeholder="Alternatieve body…"
+              oninput="_seqSteps.find(s=>s.id===${step.id}).ab_body_b=this.value">${_esc(step.ab_body_b)}</textarea>
+          </div>
+        </div>` : ''}
+
+        <!-- Wait days + reply thread info -->
+        ${!isFirst ? `
+        <div class="wait-row">
+          <span class="text-sm text-muted">Wacht</span>
+          <input class="form-input" type="number" min="1" max="30" value="${step.wait_days}"
+            oninput="updateWaitDays(${step.id},this.value)" style="width:72px;text-align:center">
+          <span class="text-sm text-muted">dag(en) na vorige stap</span>
+          ${step.is_reply ? '<span class="badge badge-primary" style="margin-left:.5rem">↩ Reply thread</span>' : ''}
+        </div>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+const VARS = [
+  { v: '{{first_name}}', l: 'Voornaam' },
+  { v: '{{last_name}}',  l: 'Achternaam' },
+  { v: '{{company}}',    l: 'Bedrijf' },
+  { v: '{{job_title}}',  l: 'Functie' },
+  { v: '{{domain}}',     l: 'Domein' },
+];
+
+function _esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); }
+
+function toggleAB(id) {
+  const s = _seqSteps.find(s => s.id === id);
+  if (!s) return;
+  s.ab_enabled = !s.ab_enabled;
+  renderSequence();
+}
+
+function toggleReplyThread(id) {
+  const s = _seqSteps.find(s => s.id === id);
+  if (!s) return;
+  s.is_reply = !s.is_reply;
+  renderSequence();
+}
+
+function updateABWeight(id, val) {
+  const s = _seqSteps.find(s => s.id === id);
+  if (!s) return;
+  s.ab_weight = parseInt(val, 10);
+  const el = document.getElementById('ab-weight-display-' + id);
+  if (el) el.textContent = `A: ${s.ab_weight}% · B: ${100-s.ab_weight}%`;
+}
+
+function updateWaitDays(id, val) {
+  const s = _seqSteps.find(s => s.id === id);
+  if (!s) return;
+  s.wait_days = parseInt(val, 10) || 1;
+}
+
+// ── Variable inserter ─────────────────────────────────────
+function insertVar(stepId, variant, varText) {
+  const taId = `body-${variant}-${stepId}`;
+  const ta = document.getElementById(taId);
+  if (!ta) return;
+  const start = ta.selectionStart, end = ta.selectionEnd;
+  const before = ta.value.slice(0, start), after = ta.value.slice(end);
+  ta.value = before + varText + after;
+  ta.selectionStart = ta.selectionEnd = start + varText.length;
+  ta.focus();
+  const s = _seqSteps.find(s => s.id === stepId);
+  if (!s) return;
+  if (variant === 'a') s.body = ta.value;
+  else s.ab_body_b = ta.value;
+}
+
+// ── Spintax wrapper ───────────────────────────────────────
+function wrapSpintax(stepId, variant) {
+  const taId = `body-${variant}-${stepId}`;
+  const ta = document.getElementById(taId);
+  if (!ta) return;
+  const sel = ta.value.slice(ta.selectionStart, ta.selectionEnd);
+  const replacement = sel ? `{${sel}|alternatief}` : '{optie A|optie B}';
+  insertTextAt(ta, replacement);
+  const s = _seqSteps.find(s => s.id === stepId);
+  if (!s) return;
+  if (variant === 'a') s.body = ta.value;
+  else s.ab_body_b = ta.value;
+}
+
+function insertTextAt(ta, text) {
+  const start = ta.selectionStart, end = ta.selectionEnd;
+  ta.value = ta.value.slice(0, start) + text + ta.value.slice(end);
+  ta.selectionStart = ta.selectionEnd = start + text.length;
+  ta.focus();
+}
+
+// ── Preview ───────────────────────────────────────────────
+function previewStep(stepId) {
+  const s = _seqSteps.find(s => s.id === stepId);
+  if (!s) return;
+  const processed = simpleSubstitute(s.subject, SAMPLE_LEAD);
+  const processedBody = simpleSubstitute(resolveSpintax(s.body), SAMPLE_LEAD);
+  document.getElementById('preview-subject').textContent = processed || '(geen onderwerp)';
+  document.getElementById('preview-body').textContent = processedBody || '(geen body)';
+  document.getElementById('preview-modal').style.display = 'flex';
+}
+function closePreview() { document.getElementById('preview-modal').style.display = 'none'; }
+
+function simpleSubstitute(text, lead) {
+  return (text || '')
+    .replace(/\{\{first_name\}\}/g, lead.first_name || '')
+    .replace(/\{\{last_name\}\}/g, lead.last_name || '')
+    .replace(/\{\{company\}\}/g, lead.company || '')
+    .replace(/\{\{job_title\}\}/g, lead.job_title || '')
+    .replace(/\{\{domain\}\}/g, lead.domain || '')
+    .replace(/\{\{email\}\}/g, lead.email || '');
+}
+
+function resolveSpintax(text) {
+  // Simple client-side spintax resolver (always picks first option)
+  return (text || '').replace(/\{([^{}]+)\}/g, (_, opts) => opts.split('|')[0]);
+}
+
+// ════════════════════════════════════════════════════════════
+// CSV upload
+// ════════════════════════════════════════════════════════════
+const FIELD_OPTIONS = ['email','first_name','last_name','company','job_title','domain','phone','country','linkedin_url','— overslaan —'];
+
+function handleCsvUpload(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => parseCsv(e.target.result);
+  reader.readAsText(file, 'UTF-8');
+}
+
+function parseCsv(raw) {
+  // Auto-detect delimiter
+  const delim = raw.indexOf(';') > raw.indexOf(',') ? ';' : ',';
+  const lines = raw.split(/\r?\n/).filter(l => l.trim());
+  if (!lines.length) { toast('Leeg CSV-bestand.', 'error'); return; }
+
+  _csvHeaders = lines[0].split(delim).map(h => h.replace(/"/g,'').trim());
+  _csvLeads = lines.slice(1).map(line => {
+    const vals = line.split(delim).map(v => v.replace(/"/g,'').trim());
+    const obj = {};
+    _csvHeaders.forEach((h, i) => { obj[h] = vals[i] || ''; });
+    return obj;
+  }).filter(r => Object.values(r).some(v => v));
+
+  // Auto-map common column names
+  _colMapping = {};
+  _csvHeaders.forEach(h => {
+    const hl = h.toLowerCase().replace(/\s+/g,'_');
+    const match = FIELD_OPTIONS.find(f => f === hl || f === h.toLowerCase());
+    _colMapping[h] = match || '— overslaan —';
+    if (hl === 'email') _colMapping[h] = 'email';
+    if (hl === 'voornaam' || hl === 'first name') _colMapping[h] = 'first_name';
+    if (hl === 'achternaam' || hl === 'last name' || hl === 'naam') _colMapping[h] = 'last_name';
+    if (hl === 'bedrijf' || hl === 'bedrijfsnaam' || hl === 'company name') _colMapping[h] = 'company';
+    if (hl === 'functie' || hl === 'job title' || hl === 'functietitel') _colMapping[h] = 'job_title';
+  });
+
+  // Show results
+  document.getElementById('csv-result').style.display = 'block';
+  const hasDupes = false; // server-side dupe check on import
+  document.getElementById('csv-stats').textContent = `✓ ${_csvLeads.length} leads geladen uit ${_csvHeaders.length} kolommen.`;
+
+  // Column mapper
+  const hasUnmapped = _csvHeaders.some(h => _colMapping[h] === '— overslaan —');
+  const mapWrap = document.getElementById('col-mapper-wrap');
+  mapWrap.style.display = hasUnmapped ? 'block' : 'none';
+  document.getElementById('col-mapper-rows').innerHTML = _csvHeaders.map(h => `
+    <div class="col-map-row">
+      <div class="col-csv">${h}</div>
+      <div class="col-arrow">→</div>
+      <div class="col-field">
+        <select class="form-select" style="font-size:.8125rem;padding:.4rem .75rem" onchange="_colMapping['${h}']=this.value">
+          ${FIELD_OPTIONS.map(f => `<option value="${f}" ${_colMapping[h]===f?'selected':''}>${f}</option>`).join('')}
+        </select>
+      </div>
+    </div>`).join('');
+
+  // Preview table
+  const head = document.getElementById('lead-preview-head');
+  const body = document.getElementById('lead-preview-body');
+  head.innerHTML = `<tr>${_csvHeaders.map(h => `<th>${h}</th>`).join('')}</tr>`;
+  body.innerHTML = _csvLeads.slice(0,5).map(row =>
+    `<tr>${_csvHeaders.map(h => `<td class="text-sm" style="max-width:140px;overflow:hidden;text-overflow:ellipsis">${row[h]||'—'}</td>`).join('')}</tr>`
+  ).join('');
+}
+
+// Drag-and-drop
+const dz = document.getElementById('drop-zone');
+if (dz) {
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+  dz.addEventListener('drop', e => {
+    e.preventDefault(); dz.classList.remove('drag-over');
+    handleCsvUpload(e.dataTransfer.files[0]);
+  });
+}
+
+// ════════════════════════════════════════════════════════════
+// Review step
+// ════════════════════════════════════════════════════════════
+function buildReview() {
+  const cfg = getBuilderConfig();
+  const totalSteps = _seqSteps.length;
+  const totalWait = _seqSteps.slice(1).reduce((s, step) => s + (step.wait_days||3), 0);
+  const leadCount = _csvLeads.length;
+  const daysPerLead = totalWait + 1;
+  const totalDuration = leadCount > 0
+    ? `${daysPerLead} dag${daysPerLead!==1?'en':''} per lead`
+    : `${daysPerLead} dag${daysPerLead!==1?'en':''} per lead`;
+
+  const dayChips = document.querySelectorAll('.day-chip.active');
+  const dayNames = ['','Ma','Di','Wo','Do','Vr','Za','Zo'];
+  const daysStr = [...dayChips].map(d => dayNames[d.dataset.day]).join(', ');
+
+  document.getElementById('review-grid').innerHTML = `
+    <div class="review-item">
+      <div class="review-item-label">Campagnenaam</div>
+      <div class="review-item-val">${_esc(cfg.name)}</div>
+    </div>
+    <div class="review-item">
+      <div class="review-item-label">Leads</div>
+      <div class="review-item-val">${leadCount > 0 ? fmtNum(leadCount) : '—'}</div>
+      <div class="review-item-sub">${leadCount > 0 ? 'Geüpload' : 'Nog niet toegevoegd'}</div>
+    </div>
+    <div class="review-item">
+      <div class="review-item-label">Sequence</div>
+      <div class="review-item-val">${totalSteps} stap${totalSteps!==1?'pen':''}</div>
+      <div class="review-item-sub">${_seqSteps.filter(s=>s.ab_enabled).length} met A/B test</div>
+    </div>
+    <div class="review-item">
+      <div class="review-item-label">Verzendvenster</div>
+      <div class="review-item-val">${cfg.send_window_start}–${cfg.send_window_end}</div>
+      <div class="review-item-sub">${daysStr}</div>
+    </div>
+    <div class="review-item">
+      <div class="review-item-label">Dagelijks limiet</div>
+      <div class="review-item-val">${cfg.daily_limit}</div>
+      <div class="review-item-sub">e-mails per dag</div>
+    </div>
+    <div class="review-item">
+      <div class="review-item-label">Bouncedrempel</div>
+      <div class="review-item-val">${(cfg.bounce_threshold*100).toFixed(0)}%</div>
+      <div class="review-item-sub">Auto-pauze bij overschrijding</div>
+    </div>`;
+
+  document.getElementById('timeline-text').textContent =
+    `Geschatte doorlooptijd: ${totalDuration} · Totaal: ${leadCount > 0 ? Math.ceil(leadCount / cfg.daily_limit) + ' werkdagen' : 'onbekend (geen leads)'}`;
+
+  // Sequence summary
+  document.getElementById('review-sequence-preview').innerHTML = `
+    <div style="font-size:.875rem;font-weight:700;margin-bottom:.75rem;color:var(--text)">Sequence overzicht</div>
+    ${_seqSteps.map((s,i) => `
+      <div style="display:flex;align-items:center;gap:.75rem;padding:.5rem 0;border-bottom:1px solid var(--border)">
+        <div class="seq-step-num" style="width:28px;height:28px;font-size:.75rem">${i+1}</div>
+        <div style="flex:1;min-width:0">
+          <div class="font-semi text-sm truncate">${s.subject||'(geen onderwerp)'}</div>
+          <div class="text-xs text-muted">${i>0?`Na ${s.wait_days} dag${s.wait_days!==1?'en':''}`:' Direct'} · ${s.ab_enabled?'A/B test':'Enkel variant'}${s.is_reply?' · Reply thread':''}</div>
+        </div>
+      </div>`).join('')}`;
+}
+
+async function saveCampaign(status) {
+  const cfg = getBuilderConfig();
+  const btn = status === 'active' ? document.getElementById('btn-activate') : document.getElementById('btn-save-draft');
+  setLoading(btn, true);
+  try {
+    // 1. Create campaign
+    const campaign = await api('/campaigns', {
+      method: 'POST',
+      body: JSON.stringify({ ...cfg, status }),
+    });
+
+    // 2. Create sequence steps (if API supports it — placeholder for now)
+    // In a full implementation each _seqSteps row would POST to /campaigns/{id}/steps
+
+    // 3. Upload leads if present
+    if (_csvLeads.length > 0) {
+      // Build corrected CSV with mapped column names
+      const rows = [Object.values(_colMapping).filter(v => v !== '— overslaan —').join(',')];
+      _csvLeads.forEach(raw => {
+        const mapped = {};
+        Object.entries(_colMapping).forEach(([csvCol, field]) => {
+          if (field !== '— overslaan —') mapped[field] = raw[csvCol] || '';
+        });
+        rows.push(Object.values(mapped).join(','));
+      });
+      const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+      const fd = new FormData();
+      fd.append('file', blob, 'leads.csv');
+      try {
+        await apiUpload(`/leads/import?campaign_id=${campaign.id}`, fd);
+      } catch (e) {
+        toast('Leads import mislukt: ' + e.message, 'warning');
+      }
+    }
+
+    toast(`Campagne "${cfg.name}" ${status === 'active' ? 'geactiveerd' : 'opgeslagen'}!`, 'success');
+    showView('list');
+    loadCampaigns();
+  } catch (e) {
+    toast('Opslaan mislukt: ' + e.message, 'error');
+  } finally {
+    setLoading(btn, false);
+  }
+}
+
+async function saveDraft() { saveCampaign('draft'); }
+
+// ════════════════════════════════════════════════════════════
+// Campaign detail
+// ════════════════════════════════════════════════════════════
+async function openDetail(id) {
+  _currentCampaignId = id;
+  showView('detail');
+  switchDetailTab('analytics');
+
+  try {
+    const campaigns = _campaigns.length ? _campaigns : await api('/campaigns');
+    const c = campaigns.find(c => c.id === id);
+    if (c) {
+      document.getElementById('detail-name').textContent = c.name;
+      document.getElementById('detail-status-badge').innerHTML = STATUS_BADGE[c.status] || STATUS_BADGE.draft;
+      document.getElementById('detail-meta').textContent = `Aangemaakt ${formatDate(c.created_at)}`;
+      document.getElementById('detail-pause-btn').textContent = c.status === 'active' ? 'Pauzeren' : 'Hervatten';
+    }
+    loadDetailAnalytics();
+    loadDetailLeads();
+  } catch (e) {
+    toast('Detail laden mislukt: ' + e.message, 'error');
+  }
+}
+
+function switchDetailTab(tab) {
+  document.querySelectorAll('.detail-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.toggle('active', t.id === 'tab-' + tab));
+  if (tab === 'sequence') loadDetailSequence();
+  if (tab === 'ab') loadDetailAB();
+}
+
+// ── Analytics tab ─────────────────────────────────────────
+async function loadDetailAnalytics() {
+  const days = document.getElementById('detail-range').value;
+  try {
+    const data = await api(`/analytics/campaigns/${_currentCampaignId}?days=${days}`);
+    renderDetailStats(data.totals || {});
+    renderLineChart(data.data || []);
+  } catch (e) {
+    document.getElementById('chart-wrap').innerHTML = `<div class="text-sm text-muted text-center" style="padding:2rem">Analytics niet beschikbaar: ${e.message}</div>`;
+  }
+}
+
+function renderDetailStats(t) {
+  document.getElementById('detail-stats-grid').innerHTML = `
+    <div class="stat-card"><div class="stat-label">Verzonden</div><div class="stat-value">${fmtNum(t.emails_sent||0)}</div></div>
+    <div class="stat-card"><div class="stat-label">Open rate</div><div class="stat-value">${fmtRate(t.open_rate||0)}</div><div class="stat-sub">${fmtNum(t.unique_opens||0)} unieke opens</div></div>
+    <div class="stat-card"><div class="stat-label">Reply rate</div><div class="stat-value">${fmtRate(t.reply_rate||0)}</div><div class="stat-sub">${fmtNum(t.replies||0)} replies</div></div>
+    <div class="stat-card"><div class="stat-label">Meeting rate</div><div class="stat-value">${fmtRate(t.meeting_rate||0)}</div><div class="stat-sub">${t.interested_count||0} geïnteresseerd</div></div>
+    <div class="stat-card ${(t.bounce_rate||0)>0.03?'accent':''}">
+      <div class="stat-label">Bounce rate</div>
+      <div class="stat-value">${fmtRate(t.bounce_rate||0)}</div>
+      <div class="stat-sub">${(t.bounce_rate||0)>0.03?'⚠ Boven drempel':' OK'}</div>
+    </div>`;
+}
+
+// ── Line chart ────────────────────────────────────────────
+const CHART_SERIES = [
+  { key: 'open_rate',    label: 'Open rate',    color: '#6c5ce7' },
+  { key: 'reply_rate',   label: 'Reply rate',   color: '#00b894' },
+  { key: 'bounce_rate',  label: 'Bounce rate',  color: '#e17055' },
+  { key: 'click_rate',   label: 'Click rate',   color: '#74b9ff' },
+];
+let _hiddenSeries = new Set();
+
+function renderLineChart(data) {
+  if (!data.length) {
+    document.getElementById('chart-wrap').innerHTML = '<div class="empty-state" style="padding:2rem"><div class="empty-state-icon">📊</div><p>Geen data in deze periode</p></div>';
+    document.getElementById('chart-legend').innerHTML = '';
+    return;
+  }
+
+  // Legend
+  document.getElementById('chart-legend').innerHTML = CHART_SERIES.map(s => `
+    <div class="legend-item ${_hiddenSeries.has(s.key) ? 'opacity-0' : ''}" style="opacity:${_hiddenSeries.has(s.key)?'.35':'1'}" onclick="toggleChartSeries('${s.key}')">
+      <div class="legend-dot" style="background:${s.color}"></div>
+      <span>${s.label}</span>
+    </div>`).join('');
+
+  const W = document.getElementById('chart-wrap').offsetWidth || 700;
+  const H = 240;
+  const PAD = { top: 16, right: 16, bottom: 40, left: 52 };
+  const cW = W - PAD.left - PAD.right;
+  const cH = H - PAD.top - PAD.bottom;
+  const n = data.length;
+
+  // Y axis: 0–max rounded up
+  const allVals = CHART_SERIES.filter(s => !_hiddenSeries.has(s.key)).flatMap(s => data.map(d => d[s.key] || 0));
+  const yMax = Math.max(...allVals, 0.01);
+  const yMaxRounded = Math.ceil(yMax * 100) / 100;
+
+  const xScale = i => PAD.left + (i / (n - 1)) * cW;
+  const yScale = v => PAD.top + cH - (v / yMaxRounded) * cH;
+
+  // Y gridlines (5 lines)
+  const gridLines = Array.from({length:5}, (_,i) => {
+    const y = PAD.top + cH - (i / 4) * cH;
+    const val = ((i / 4) * yMaxRounded * 100).toFixed(1);
+    return `
+      <line x1="${PAD.left}" y1="${y}" x2="${PAD.left+cW}" y2="${y}" stroke="var(--border)" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x="${PAD.left - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="var(--muted)">${val}%</text>`;
+  }).join('');
+
+  // X axis labels (max 7)
+  const step = Math.max(1, Math.floor(n / 7));
+  const xLabels = data.filter((_, i) => i % step === 0).map((d, idx) => {
+    const i = idx * step;
+    const x = xScale(i);
+    const label = new Date(d.date).toLocaleDateString('nl-NL', {day:'numeric',month:'short'});
+    return `<text x="${x}" y="${H - 8}" text-anchor="middle" font-size="10" fill="var(--muted)">${label}</text>`;
+  }).join('');
+
+  // Series paths
+  const paths = CHART_SERIES.filter(s => !_hiddenSeries.has(s.key)).map(s => {
+    const pts = data.map((d, i) => `${xScale(i).toFixed(1)},${yScale(d[s.key] || 0).toFixed(1)}`);
+    const pathD = 'M ' + pts.join(' L ');
+    const firstX = xScale(0).toFixed(1), lastX = xScale(n-1).toFixed(1);
+    const areaD = `M ${firstX},${PAD.top+cH} L ${pathD.slice(2)} L ${lastX},${PAD.top+cH} Z`;
+    return `
+      <defs>
+        <linearGradient id="lg-${s.key}" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="${s.color}" stop-opacity=".15"/>
+          <stop offset="100%" stop-color="${s.color}" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <path d="${areaD}" fill="url(#lg-${s.key})"/>
+      <path d="${pathD}" fill="none" stroke="${s.color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>`;
+  }).join('');
+
+  document.getElementById('chart-wrap').innerHTML = `
+    <svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" style="font-family:var(--font-ui)">
+      ${gridLines}
+      ${xLabels}
+      ${paths}
+    </svg>`;
+}
+
+function toggleChartSeries(key) {
+  if (_hiddenSeries.has(key)) _hiddenSeries.delete(key);
+  else _hiddenSeries.add(key);
+  // Re-render with current data — simplify by re-loading
+  loadDetailAnalytics();
+}
+
+// ── Sequence tab ──────────────────────────────────────────
+async function loadDetailSequence() {
+  const wrap = document.getElementById('seq-steps-list');
+  wrap.innerHTML = '<div class="skeleton" style="height:80px;border-radius:var(--radius-card);margin-bottom:1rem"></div>'.repeat(3);
+  try {
+    const steps = await api(`/analytics/campaigns/${_currentCampaignId}/steps`);
+    if (!steps.length) {
+      wrap.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📝</div><h3>Geen sequence stappen</h3></div>';
+      return;
+    }
+    wrap.innerHTML = steps.map((s, i) => `
+      <div class="card" style="margin-bottom:1rem">
+        <div class="card-body">
+          <div style="display:flex;align-items:center;gap:.875rem;margin-bottom:.75rem">
+            <div class="seq-step-num" style="width:32px;height:32px;font-size:.8rem">${i+1}${s.ab_variant ? s.ab_variant : ''}</div>
+            <div style="flex:1;min-width:0">
+              <div class="font-semi truncate">${s.subject_preview || '(geen onderwerp)'}</div>
+              <div class="text-xs text-muted">${s.ab_variant ? `Variant ${s.ab_variant}` : 'Enkel variant'}</div>
+            </div>
+            <div style="display:flex;gap:.5rem">
+              <span class="badge ${s.reply_rate > 0.1 ? 'badge-success' : 'badge-muted'}">${fmtRate(s.reply_rate)} reply</span>
+            </div>
+          </div>
+          <div class="step-metrics">
+            <div class="step-metric"><div class="step-metric-val">${fmtNum(s.emails_sent)}</div><div class="step-metric-label">Verzonden</div></div>
+            <div class="step-metric"><div class="step-metric-val">${fmtRate(s.reply_rate)}</div><div class="step-metric-label">Reply rate</div></div>
+            <div class="step-metric"><div class="step-metric-val">${fmtRate(s.click_rate)}</div><div class="step-metric-label">Click rate</div></div>
+            <div class="step-metric"><div class="step-metric-val ${s.bounce_rate > 0.03 ? 'text-danger' : ''}">${fmtRate(s.bounce_rate)}</div><div class="step-metric-label">Bounce rate</div></div>
+          </div>
+          <div class="progress-bar" style="margin-top:.875rem;height:4px">
+            <div class="progress-fill" style="width:${Math.min(100, s.reply_rate * 1000).toFixed(0)}%"></div>
+          </div>
+        </div>
+      </div>`).join('');
+  } catch (e) {
+    wrap.innerHTML = `<div class="text-sm text-muted text-center" style="padding:2rem">Sequence laden mislukt: ${e.message}</div>`;
+  }
+}
+
+// ── A/B tab ───────────────────────────────────────────────
+async function loadDetailAB() {
+  const wrap = document.getElementById('ab-results-wrap');
+  wrap.innerHTML = '<div class="skeleton" style="height:200px;border-radius:var(--radius-card)"></div>';
+  try {
+    const data = await api(`/analytics/campaigns/${_currentCampaignId}/ab`);
+    if (!data.ab_steps || !data.ab_steps.length) {
+      wrap.innerHTML = `<div class="empty-state"><div class="empty-state-icon">🔬</div><h3>Geen A/B tests</h3><p>Activeer A/B testing in de sequence builder voor een stap.</p></div>`;
+      return;
+    }
+    wrap.innerHTML = data.ab_steps.map(result => {
+      const conf = result.confidence_pct || 0;
+      const barColor = conf >= 95 ? 'var(--success)' : conf >= 80 ? 'var(--warning)' : 'var(--primary-lt)';
+      return `
+      <div class="card" style="margin-bottom:1.25rem">
+        <div class="card-header">
+          <span class="font-semi">Stap ${result.step_number} — A/B test</span>
+          ${result.significant ? `<span class="badge badge-success">✓ Winnaar: Variant ${result.winner}</span>` : `<span class="badge badge-muted">Nog geen winnaar</span>`}
+        </div>
+        <div class="card-body">
+          <p class="text-sm text-muted" style="margin-bottom:1rem">${result.reason || ''}</p>
+
+          <div class="two-col" style="margin-bottom:1rem">
+            <div style="padding:1rem;background:#f4f1ff;border-radius:var(--radius-input);border:1.5px solid ${result.winner==='A'?'var(--primary)':'var(--border)'}">
+              <div style="font-size:.75rem;font-weight:700;color:var(--primary);letter-spacing:.06em;text-transform:uppercase;margin-bottom:.5rem">Variant A</div>
+              <div style="font-family:var(--font-disp);font-size:1.75rem;color:var(--primary)">${fmtRate(result.rate_a||0)}</div>
+              <div class="text-xs text-muted">${result.sends_a||0} verzonden · ${result.replies_a||0} replies</div>
+            </div>
+            <div style="padding:1rem;background:#fff4f2;border-radius:var(--radius-input);border:1.5px solid ${result.winner==='B'?'var(--danger)':'var(--border)'}">
+              <div style="font-size:.75rem;font-weight:700;color:var(--danger);letter-spacing:.06em;text-transform:uppercase;margin-bottom:.5rem">Variant B</div>
+              <div style="font-family:var(--font-disp);font-size:1.75rem;color:var(--danger)">${fmtRate(result.rate_b||0)}</div>
+              <div class="text-xs text-muted">${result.sends_b||0} verzonden · ${result.replies_b||0} replies</div>
+            </div>
+          </div>
+
+          <div style="margin-top:.75rem">
+            <div style="display:flex;justify-content:space-between;font-size:.75rem;margin-bottom:.25rem">
+              <span class="text-muted">Statistische betrouwbaarheid</span>
+              <span class="font-semi">${conf.toFixed(1)}%</span>
+            </div>
+            <div class="sig-bar">
+              <div class="sig-fill" style="width:${conf.toFixed(1)}%;background:${barColor}"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:.7rem;color:var(--muted);margin-top:.2rem">
+              <span>0%</span><span>80% goed</span><span>95% zeker</span><span>100%</span>
+            </div>
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    wrap.innerHTML = `<div class="text-sm text-muted text-center" style="padding:2rem">A/B resultaten laden mislukt: ${e.message}</div>`;
+  }
+}
+
+// ── Leads tab ─────────────────────────────────────────────
+async function loadDetailLeads() {
+  try {
+    _currentLeads = await api(`/leads?campaign_id=${_currentCampaignId}&limit=500`);
+    renderLeadsTable();
+  } catch (e) {
+    document.getElementById('leads-tbody').innerHTML = `<tr><td colspan="7" class="text-sm text-muted text-center">Leads laden mislukt: ${e.message}</td></tr>`;
+  }
+}
+
+function filterLeads(status, el) {
+  _currentLeadStatus = status;
+  document.querySelectorAll('#lead-status-filter .filter-chip').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  renderLeadsTable();
+}
+
+const LEAD_STATUS_BADGE = {
+  new:          '<span class="badge badge-muted">Nieuw</span>',
+  contacted:    '<span class="badge badge-info">Gecontacteerd</span>',
+  replied:      '<span class="badge badge-success">Geantwoord</span>',
+  interested:   '<span class="badge badge-success">Geïnteresseerd</span>',
+  not_interested:'<span class="badge badge-muted">Niet geïnteresseerd</span>',
+  unsubscribed: '<span class="badge badge-warning">Uitgeschreven</span>',
+  bounced:      '<span class="badge badge-danger">Bounced</span>',
+};
+
+function renderLeadsTable() {
+  const filtered = _currentLeadStatus === 'all'
+    ? _currentLeads
+    : _currentLeads.filter(l => l.status === _currentLeadStatus);
+
+  const tbody = document.getElementById('leads-tbody');
+  if (!filtered.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="text-center text-muted" style="padding:2rem">Geen leads gevonden</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = filtered.map(l => `
+    <tr>
+      <td class="text-sm font-semi">${l.email}</td>
+      <td class="text-sm">${[l.first_name, l.last_name].filter(Boolean).join(' ') || '—'}</td>
+      <td class="text-sm">${l.company || l.domain || '—'}</td>
+      <td>${LEAD_STATUS_BADGE[l.status] || `<span class="badge badge-muted">${l.status||'—'}</span>`}</td>
+      <td class="text-sm text-muted">—</td>
+      <td class="text-sm text-muted">—</td>
+      <td>
+        <button class="btn btn-ghost btn-sm" onclick="toast('Lead acties komen binnenkort','info')">···</button>
+      </td>
+    </tr>`).join('');
+}
+
+// ── Campaign actions ──────────────────────────────────────
+async function toggleCampaignStatus() {
+  const c = _campaigns.find(c => c.id === _currentCampaignId);
+  if (!c) return;
+  const newStatus = c.status === 'active' ? 'paused' : 'active';
+  try {
+    await api(`/campaigns/${_currentCampaignId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: newStatus }),
+    });
+    c.status = newStatus;
+    document.getElementById('detail-status-badge').innerHTML = STATUS_BADGE[newStatus];
+    document.getElementById('detail-pause-btn').textContent = newStatus === 'active' ? 'Pauzeren' : 'Hervatten';
+    toast(`Campagne ${newStatus === 'active' ? 'hervat' : 'gepauzeerd'}.`, 'success');
+  } catch (e) {
+    toast('Status wijzigen mislukt: ' + e.message, 'error');
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// AI Subject Optimizer
+// ════════════════════════════════════════════════════════════
+async function aiOptimizeSubject(stepId) {
+  var step = _seqSteps.find(function(s) { return s.id === stepId; });
+  if (!step || !step.subject) { toast('Vul eerst een onderwerp in.', 'warning'); return; }
+
+  toast('AI genereert varianten…', 'info', 3000);
+  try {
+    var res = await api('/ai/subject-optimize', {
+      method: 'POST',
+      body: JSON.stringify({ subject: step.subject, context: 'B2B cold outreach' }),
+    });
+    var variants = (res.variants || []);
+    if (!variants.length) { toast('Geen varianten gegenereerd.', 'warning'); return; }
+
+    // Show in a simple dropdown under the input
+    var input = document.getElementById('subject-a-' + stepId);
+    if (!input) return;
+
+    // Remove existing dropdown
+    var existing = document.getElementById('ai-subjects-' + stepId);
+    if (existing) existing.remove();
+
+    var dropdown = document.createElement('div');
+    dropdown.id = 'ai-subjects-' + stepId;
+    dropdown.style.cssText = 'border:1.5px solid var(--primary-lt);border-radius:8px;background:#faf8ff;padding:.5rem;margin-top:.375rem';
+    dropdown.innerHTML = '<div style="font-size:.7rem;font-weight:700;color:var(--primary);margin-bottom:.375rem;text-transform:uppercase;letter-spacing:.04em">AI varianten (klik om te kiezen)</div>' +
+      variants.map(function(v) {
+        var scoreColor = v.spam_score < 0.2 ? 'var(--success)' : v.spam_score < 0.5 ? 'var(--warning)' : 'var(--danger)';
+        return '<div style="display:flex;align-items:center;gap:.5rem;padding:.4rem .5rem;cursor:pointer;border-radius:6px;transition:background .15s" ' +
+          'onmouseover="this.style.background=\'#ede8ff\'" onmouseout="this.style.background=\'transparent\'" ' +
+          'onclick="pickSubject(' + stepId + ',this.dataset.subj);this.parentElement.remove()" data-subj="' + v.subject.replace(/"/g, '&quot;') + '">' +
+          '<span style="flex:1;font-size:.8125rem">' + v.subject + '</span>' +
+          '<span style="font-size:.7rem;color:' + scoreColor + ';font-weight:600;white-space:nowrap">spam ' + (v.spam_score * 100).toFixed(0) + '%</span>' +
+        '</div>';
+      }).join('');
+    input.parentElement.appendChild(dropdown);
+  } catch (e) { toast('AI fout: ' + e.message, 'error'); }
+}
+
+function pickSubject(stepId, subject) {
+  var step = _seqSteps.find(function(s) { return s.id === stepId; });
+  if (step) step.subject = subject;
+  var input = document.getElementById('subject-a-' + stepId);
+  if (input) input.value = subject;
+}
+
+// ════════════════════════════════════════════════════════════
+// AI Sequence Writer
+// ════════════════════════════════════════════════════════════
+function openAiWriter() {
+  document.getElementById('modal-ai-writer').style.display = 'flex';
+  document.getElementById('ai-result').style.display = 'none';
+  document.getElementById('ai-form').style.display = 'block';
+}
+function closeAiWriter() { document.getElementById('modal-ai-writer').style.display = 'none'; }
+
+async function generateSequence() {
+  var btn = document.getElementById('btn-generate-seq');
+  var audience = document.getElementById('ai-audience').value.trim();
+  var valueProp = document.getElementById('ai-value-prop').value.trim();
+  if (!audience || !valueProp) { toast('Vul doelgroep en value proposition in.', 'warning'); return; }
+
+  setLoading(btn, true, 'AI werkt…');
+  try {
+    var res = await api('/sequences/generate', {
+      method: 'POST',
+      body: JSON.stringify({
+        audience: audience,
+        value_proposition: valueProp,
+        tone: document.getElementById('ai-tone').value,
+        language: document.getElementById('ai-lang').value,
+        step_count: parseInt(document.getElementById('ai-steps').value, 10) || 4,
+      }),
+    });
+    _aiResultSteps = res.steps || [];
+    document.getElementById('ai-form').style.display = 'none';
+    document.getElementById('ai-result').style.display = 'block';
+    document.getElementById('ai-preview').innerHTML = _aiResultSteps.map(function(s, i) {
+      return '<div style="border:1.5px solid var(--border);border-radius:8px;padding:1rem;margin-bottom:.75rem">' +
+        '<div style="display:flex;justify-content:space-between;margin-bottom:.5rem">' +
+          '<span style="font-weight:700;color:var(--primary)">Stap ' + (i+1) + '</span>' +
+          (i > 0 ? '<span class="text-xs text-muted">na ' + s.wait_days + ' dagen</span>' : '') +
+        '</div>' +
+        '<div style="font-size:.85rem;font-weight:600;margin-bottom:.4rem">' + (s.subject || '') + '</div>' +
+        '<div style="font-size:.8rem;color:var(--muted);white-space:pre-wrap;line-height:1.5">' + (s.body || '') + '</div>' +
+      '</div>';
+    }).join('');
+  } catch (e) { toast('Generatie mislukt: ' + e.message, 'error'); }
+  finally { setLoading(btn, false, 'Genereer sequence'); }
+}
+
+var _aiResultSteps = [];
+
+function applyAiSequence() {
+  if (!_aiResultSteps || _aiResultSteps.length === 0) { closeAiWriter(); return; }
+  if (_seqSteps.length > 0 && _seqSteps.some(function(s) { return s.subject || s.body; })) {
+    if (!confirm('Bestaande stappen worden vervangen. Doorgaan?')) return;
+  }
+  _seqSteps = [];
+  _stepIdCounter = 0;
+  _aiResultSteps.forEach(function(s) {
+    _stepIdCounter++;
+    _seqSteps.push({
+      id: _stepIdCounter,
+      subject: s.subject || '',
+      body: s.body || '',
+      wait_days: s.wait_days || 3,
+      is_reply: false,
+      ab_enabled: false,
+      ab_subject_b: '',
+      ab_body_b: '',
+      ab_weight: 50,
+    });
+  });
+  renderSequence();
+  closeAiWriter();
+  toast(_seqSteps.length + ' stappen toegevoegd.', 'success');
+}
+
+// ════════════════════════════════════════════════════════════
+// Template Picker
+// ════════════════════════════════════════════════════════════
+async function openTemplatePicker() {
+  document.getElementById('modal-template').style.display = 'flex';
+  var list = document.getElementById('template-list');
+  list.innerHTML = '<div style="text-align:center;color:var(--muted);padding:2rem">Templates laden…</div>';
+  try {
+    var templates = await api('/templates');
+    if (!templates.length) {
+      list.innerHTML = '<div style="text-align:center;color:var(--muted);padding:2rem">Geen templates beschikbaar.</div>';
+      return;
+    }
+    list.innerHTML = templates.map(function(t) {
+      return '<div style="border:1.5px solid var(--border);border-radius:8px;padding:1rem;margin-bottom:.75rem;cursor:pointer;transition:all .15s" ' +
+             'onmouseover="this.style.borderColor=\'var(--primary)\'" onmouseout="this.style.borderColor=\'var(--border)\'" ' +
+             'onclick="useTemplate(\'' + t.id + '\')">' +
+        '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:.5rem">' +
+          '<div>' +
+            '<div style="font-weight:700">' + t.name + '</div>' +
+            '<div class="text-xs text-muted">' + t.category + ' · ' + t.language.toUpperCase() + '</div>' +
+          '</div>' +
+          '<button class="btn btn-ghost btn-sm">Gebruik</button>' +
+        '</div>' +
+        '<div style="font-size:.85rem;font-weight:600;margin:.4rem 0">' + t.subject + '</div>' +
+        '<div style="font-size:.78rem;color:var(--muted);white-space:pre-wrap;line-height:1.5;max-height:120px;overflow:hidden">' + t.body + '</div>' +
+      '</div>';
+    }).join('');
+    window._availableTemplates = templates;
+  } catch (e) { toast('Kon templates niet laden: ' + e.message, 'error'); }
+}
+function closeTemplatePicker() { document.getElementById('modal-template').style.display = 'none'; }
+
+function useTemplate(id) {
+  var template = (window._availableTemplates || []).find(function(t) { return t.id === id; });
+  if (!template) return;
+  _stepIdCounter++;
+  _seqSteps.push({
+    id: _stepIdCounter,
+    subject: template.subject,
+    body: template.body,
+    wait_days: _seqSteps.length === 0 ? 0 : 3,
+    is_reply: false, ab_enabled: false, ab_subject_b: '', ab_body_b: '', ab_weight: 50,
+  });
+  renderSequence();
+  closeTemplatePicker();
+  toast('Template "' + template.name + '" toegevoegd als stap ' + _seqSteps.length, 'success');
+}
+
+async function deleteCampaign() {
+  if (!confirm('Campagne permanent verwijderen? Dit kan niet ongedaan worden gemaakt.')) return;
+  try {
+    await api(`/campaigns/${_currentCampaignId}`, { method: 'DELETE' });
+    toast('Campagne verwijderd.', 'success');
+    showView('list');
+    loadCampaigns();
+  } catch (e) {
+    toast('Verwijderen mislukt: ' + e.message, 'error');
+  }
+}
+</script>
+
+<!-- ── AI Sequence Writer Modal ────────────────────────────── -->
+<div class="modal-overlay" id="modal-ai-writer" style="display:none" onclick="if(event.target===this)closeAiWriter()">
+  <div class="modal" style="max-width:640px;max-height:88vh;overflow-y:auto">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
+      <h3 style="font-family:var(--font-disp);font-size:1.25rem">
+        <span style="background:linear-gradient(90deg,#a29bfe,#6c5ce7);-webkit-background-clip:text;-webkit-text-fill-color:transparent">AI</span>
+        sequence schrijver
+      </h3>
+      <button class="btn-icon" onclick="closeAiWriter()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <div id="ai-form">
+      <p class="text-sm text-muted" style="margin-bottom:1.25rem">Beschrijf je doelgroep en value proposition. Claude genereert een complete sequence in jouw tone of voice.</p>
+
+      <div class="form-group">
+        <label class="form-label">Doelgroep *</label>
+        <input id="ai-audience" type="text" class="form-input" placeholder="bijv. CTOs bij Nederlandse SaaS startups (10-50 medewerkers)">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Value proposition *</label>
+        <textarea id="ai-value-prop" class="form-input" rows="3" placeholder="bijv. We verlagen AWS-kosten met 40% via geautomatiseerd rightsizing. Geen contract, alleen succes-fee."></textarea>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.75rem">
+        <div class="form-group">
+          <label class="form-label">Tone</label>
+          <select id="ai-tone" class="form-select">
+            <option value="professional">Professioneel</option>
+            <option value="casual">Casual</option>
+            <option value="direct">Direct</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Taal</label>
+          <select id="ai-lang" class="form-select">
+            <option value="nl">Nederlands</option>
+            <option value="en">English</option>
+            <option value="fr">Français</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Stappen</label>
+          <select id="ai-steps" class="form-select">
+            <option value="3">3</option>
+            <option value="4" selected>4</option>
+            <option value="5">5</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:.75rem;margin-top:1rem">
+        <button class="btn btn-ghost" onclick="closeAiWriter()">Annuleren</button>
+        <button class="btn btn-primary" style="flex:1" id="btn-generate-seq" onclick="generateSequence()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 2L9.5 8.5L3 11L9.5 13.5L12 20L14.5 13.5L21 11L14.5 8.5L12 2z"/></svg>
+          Genereer sequence
+        </button>
+      </div>
+    </div>
+
+    <div id="ai-result" style="display:none">
+      <p class="text-sm text-muted" style="margin-bottom:1rem">Bekijk de gegenereerde sequence en klik op "Toepassen" om te gebruiken.</p>
+      <div id="ai-preview"></div>
+      <div style="display:flex;gap:.75rem;margin-top:1rem">
+        <button class="btn btn-ghost" onclick="document.getElementById('ai-form').style.display='block';document.getElementById('ai-result').style.display='none'">← Opnieuw</button>
+        <button class="btn btn-primary" style="flex:1" onclick="applyAiSequence()">Toepassen op campagne</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Template Picker Modal ──────────────────────────────── -->
+<div class="modal-overlay" id="modal-template" style="display:none" onclick="if(event.target===this)closeTemplatePicker()">
+  <div class="modal" style="max-width:680px;max-height:88vh;overflow-y:auto">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
+      <h3 style="font-family:var(--font-disp);font-size:1.25rem">Template kiezen</h3>
+      <button class="btn-icon" onclick="closeTemplatePicker()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <p class="text-sm text-muted" style="margin-bottom:1rem">Kies een pre-built template. Wordt toegevoegd als nieuwe stap.</p>
+    <div id="template-list"></div>
+  </div>
+</div>
+
+</body>
+</html>

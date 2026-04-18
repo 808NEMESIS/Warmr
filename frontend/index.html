@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Warmr — Inloggen</title>
+  <link rel="icon" type="image/png" href="logo-warmr.png">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <style>
+    .auth-panel-features { margin-top: 2.5rem; display: flex; flex-direction: column; gap: .5rem; }
+    .auth-panel-logo-wrap { display: flex; align-items: center; gap: .75rem; }
+    .auth-panel-logo-mark {
+      width: 40px; height: 40px; border-radius: 10px;
+      background: rgba(255,255,255,.2); display: flex; align-items: center;
+      justify-content: center; font-family: var(--font-disp); font-size: 1.2rem; color: #fff;
+    }
+    .divider-line { height: 1px; background: rgba(255,255,255,.2); margin: 2rem 0; }
+    .auth-quote {
+      font-family: var(--font-disp);
+      font-style: italic;
+      font-size: 1.0625rem;
+      opacity: .85;
+      line-height: 1.6;
+    }
+    .auth-quote-source { font-size: .8125rem; opacity: .65; margin-top: .5rem; }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: .875rem; }
+    .forgot-link { font-size: .8rem; color: var(--muted); text-align: right; margin-top: -.5rem; }
+    .forgot-link a { color: var(--primary); }
+    #reset-msg { display: none; }
+  </style>
+</head>
+<body>
+<div class="auth-layout">
+
+  <!-- Left gradient panel -->
+  <div class="auth-panel">
+    <div class="auth-panel-logo-wrap">
+      <img src="logo-warmr.png" alt="Warmr" style="height:48px;width:auto;max-width:200px;object-fit:contain;filter:brightness(0) invert(1)">
+    </div>
+
+    <div style="margin-top:3.5rem">
+      <div class="auth-panel-tagline">Email deliverability,<br>volledig in eigen beheer.</div>
+      <div class="auth-panel-sub">
+        Stuur meer, land in de inbox.<br>
+        Geen vendor lock-in. Geen verborgen kosten.
+      </div>
+    </div>
+
+    <div class="auth-panel-features">
+      <div class="auth-feature"><div class="auth-feature-dot"></div>Automatische warmup voor iedere inbox</div>
+      <div class="auth-feature"><div class="auth-feature-dot"></div>Reputatiescore realtime gemonitord</div>
+      <div class="auth-feature"><div class="auth-feature-dot"></div>Multi-stap campagnes met A/B testing</div>
+      <div class="auth-feature"><div class="auth-feature-dot"></div>GDPR-compliant, zelf gehost</div>
+    </div>
+
+    <div class="divider-line"></div>
+    <div class="auth-quote">
+      "Binnen 4 weken gingen onze open rates van 18% naar 54%."
+    </div>
+    <div class="auth-quote-source">— Aerys klant, BENELUX SaaS</div>
+  </div>
+
+  <!-- Right form panel -->
+  <div class="auth-form-panel">
+    <div class="auth-form-wrap">
+      <div style="margin-bottom:2rem">
+        <h2 style="font-size:1.625rem;margin-bottom:.375rem">Welkom terug</h2>
+        <p class="text-muted text-sm">Log in op je Warmr dashboard</p>
+      </div>
+
+      <div class="auth-tabs">
+        <div class="auth-tab active" data-tab="login" onclick="switchTab('login')">Inloggen</div>
+        <div class="auth-tab" data-tab="signup" onclick="switchTab('signup')">Account aanmaken</div>
+      </div>
+
+      <!-- Login tab -->
+      <div id="tab-login" class="auth-tab-pane active">
+        <div class="form-group">
+          <label class="form-label">E-mailadres</label>
+          <input id="login-email" type="email" class="form-input" placeholder="jij@bedrijf.nl" autocomplete="email">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Wachtwoord</label>
+          <input id="login-pw" type="password" class="form-input" placeholder="••••••••" autocomplete="current-password">
+        </div>
+        <div class="forgot-link">
+          <a href="#" onclick="showReset(event)">Wachtwoord vergeten?</a>
+        </div>
+        <button id="btn-login" class="btn btn-primary w-full btn-lg" onclick="doLogin()">
+          Inloggen
+        </button>
+        <div id="login-error" class="form-error text-center" style="display:none"></div>
+      </div>
+
+      <!-- Signup tab -->
+      <div id="tab-signup" class="auth-tab-pane">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Voornaam</label>
+            <input id="signup-firstname" type="text" class="form-input" placeholder="Jan">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Achternaam</label>
+            <input id="signup-lastname" type="text" class="form-input" placeholder="de Vries">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Bedrijfsnaam</label>
+          <input id="signup-company" type="text" class="form-input" placeholder="Jouw bedrijf B.V.">
+        </div>
+        <div class="form-group">
+          <label class="form-label">E-mailadres</label>
+          <input id="signup-email" type="email" class="form-input" placeholder="jij@bedrijf.nl" autocomplete="email">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Wachtwoord</label>
+          <input id="signup-pw" type="password" class="form-input" placeholder="Min. 8 tekens" autocomplete="new-password">
+          <span class="form-hint">Minimaal 8 tekens, inclusief een cijfer.</span>
+        </div>
+        <button id="btn-signup" class="btn btn-primary w-full btn-lg" onclick="doSignup()">
+          Account aanmaken
+        </button>
+        <div id="signup-error" class="form-error text-center" style="display:none"></div>
+        <div id="signup-success" class="text-center text-sm" style="display:none;color:var(--success)">
+          ✓ Check je inbox voor de bevestigingsmail.
+        </div>
+      </div>
+
+      <!-- Password reset -->
+      <div id="reset-msg" style="display:none;margin-top:1rem">
+        <div class="form-group">
+          <label class="form-label">Je e-mailadres</label>
+          <input id="reset-email" type="email" class="form-input" placeholder="jij@bedrijf.nl">
+        </div>
+        <div style="display:flex;gap:.75rem;margin-top:.75rem">
+          <button class="btn btn-ghost" onclick="hideReset()">Annuleren</button>
+          <button id="btn-reset" class="btn btn-primary" style="flex:1" onclick="doReset()">Verstuur resetlink</button>
+        </div>
+        <div id="reset-success" class="text-sm text-center" style="display:none;color:var(--success);margin-top:.75rem">
+          ✓ Resetlink verstuurd — check je inbox.
+        </div>
+      </div>
+
+      <p class="text-xs text-muted text-center" style="margin-top:1.5rem">
+        Door in te loggen ga je akkoord met de <a href="#">Gebruiksvoorwaarden</a> en <a href="#">Privacybeleid</a>.
+      </p>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+<script>
+  // Redirect if already logged in
+  (async () => {
+    const { data: { session } } = await _supabase.auth.getSession();
+    if (session) window.location.href = '/dashboard.html';
+  })();
+
+  function switchTab(tab) {
+    document.querySelectorAll('.auth-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+    document.querySelectorAll('.auth-tab-pane').forEach(p => p.classList.toggle('active', p.id === `tab-${tab}`));
+    hideReset();
+  }
+
+  function showReset(e) {
+    e.preventDefault();
+    document.getElementById('reset-msg').style.display = 'block';
+    document.getElementById('btn-login').style.display = 'none';
+  }
+  function hideReset() {
+    document.getElementById('reset-msg').style.display = 'none';
+    document.getElementById('btn-login').style.display = '';
+    document.getElementById('reset-success').style.display = 'none';
+  }
+
+  async function doLogin() {
+    const email = document.getElementById('login-email').value.trim();
+    const password = document.getElementById('login-pw').value;
+    const errEl = document.getElementById('login-error');
+    const btn = document.getElementById('btn-login');
+
+    errEl.style.display = 'none';
+    if (!email || !password) { errEl.textContent = 'Vul e-mail en wachtwoord in.'; errEl.style.display = 'block'; return; }
+
+    setLoading(btn, true, 'Inloggen…');
+    const { data, error } = await _supabase.auth.signInWithPassword({ email, password });
+    setLoading(btn, false, 'Inloggen');
+
+    if (error) { errEl.textContent = error.message; errEl.style.display = 'block'; return; }
+
+    // Check onboarding: skip if user already has inboxes OR localStorage flag set
+    const onboarded = localStorage.getItem(`warmr_onboarded_${data.session.user.id}`);
+    if (onboarded) { window.location.href = '/dashboard.html'; return; }
+    try {
+      const inboxes = await api('/inboxes');
+      if (inboxes && inboxes.length > 0) {
+        localStorage.setItem(`warmr_onboarded_${data.session.user.id}`, '1');
+        window.location.href = '/dashboard.html';
+        return;
+      }
+    } catch {}
+    window.location.href = '/onboarding.html';
+  }
+
+  async function doSignup() {
+    const email = document.getElementById('signup-email').value.trim();
+    const password = document.getElementById('signup-pw').value;
+    const company = document.getElementById('signup-company').value.trim();
+    const firstName = document.getElementById('signup-firstname').value.trim();
+    const lastName = document.getElementById('signup-lastname').value.trim();
+    const errEl = document.getElementById('signup-error');
+    const btn = document.getElementById('btn-signup');
+    const successEl = document.getElementById('signup-success');
+
+    errEl.style.display = 'none';
+    successEl.style.display = 'none';
+
+    if (!email || !password || !company) {
+      errEl.textContent = 'Vul alle verplichte velden in.'; errEl.style.display = 'block'; return;
+    }
+    if (password.length < 8) {
+      errEl.textContent = 'Wachtwoord moet minimaal 8 tekens zijn.'; errEl.style.display = 'block'; return;
+    }
+
+    setLoading(btn, true, 'Account aanmaken…');
+    const { data, error } = await _supabase.auth.signUp({
+      email,
+      password,
+      options: { data: { company_name: company, first_name: firstName, last_name: lastName } },
+    });
+    setLoading(btn, false, 'Account aanmaken');
+
+    if (error) { errEl.textContent = error.message; errEl.style.display = 'block'; return; }
+
+    // Insert client row via FastAPI (on next login after email verify)
+    // For now store company in user metadata — clients row created on first API call
+    successEl.style.display = 'block';
+  }
+
+  async function doReset() {
+    const email = document.getElementById('reset-email').value.trim();
+    if (!email) return;
+    const btn = document.getElementById('btn-reset');
+    setLoading(btn, true, 'Versturen…');
+    const { error } = await _supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: window.location.origin + '/index.html',
+    });
+    setLoading(btn, false, 'Verstuur resetlink');
+    if (error) { toast(error.message, 'error'); return; }
+    document.getElementById('reset-success').style.display = 'block';
+  }
+
+  // Enter key support
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    const active = document.querySelector('.auth-tab-pane.active');
+    if (!active) return;
+    if (active.id === 'tab-login') doLogin();
+    else if (active.id === 'tab-signup') doSignup();
+  });
+</script>
+</body>
+</html>

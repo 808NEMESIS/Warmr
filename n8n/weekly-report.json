@@ -1,0 +1,163 @@
+{
+  "name": "Warmr — Weekly Report",
+  "nodes": [
+    {
+      "id": "c9d0e1f2-0009-0009-0009-000000000001",
+      "name": "Schedule: Monday 08:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "c9d0e1f2-0009-0009-0009-000000000002",
+      "name": "GET /analytics/weekly-report",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.WARMR_API_BASE }}/analytics/weekly-report",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.WARMR_API_TOKEN }}" }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "id": "c9d0e1f2-0009-0009-0009-000000000003",
+      "name": "Success?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 300],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "cond-1",
+              "leftValue": "={{ $json.error }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "isEmpty" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "c9d0e1f2-0009-0009-0009-000000000004",
+      "name": "Build HTML report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 200],
+      "parameters": {
+        "jsCode": "const r = $input.item.json;\n\nconst pct = (n, d) => d > 0 ? (n / d * 100).toFixed(1) + '%' : '—';\n\nconst inboxRows = (r.inbox_breakdown || []).slice(0, 10).map(i =>\n  `<tr>\n    <td>${i.email}</td>\n    <td>${i.domain}</td>\n    <td>${Math.round(i.reputation_score ?? 0)}/100</td>\n    <td style=\"text-transform:capitalize\">${i.status}</td>\n  </tr>`\n).join('');\n\nconst periodFrom = new Date(r.period?.from).toLocaleDateString('nl-NL', { day: 'numeric', month: 'long' });\nconst periodTo   = new Date(r.period?.to).toLocaleDateString('nl-NL',   { day: 'numeric', month: 'long' });\n\nconst html = `\n<!DOCTYPE html>\n<html>\n<head>\n  <meta charset=\"utf-8\">\n  <style>\n    body { font-family: -apple-system, sans-serif; color: #1a1a2e; max-width: 640px; margin: 0 auto; padding: 24px; }\n    h1 { font-size: 22px; margin-bottom: 4px; }\n    .period { color: #666; font-size: 14px; margin-bottom: 24px; }\n    .stat-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 24px; }\n    .stat { background: #f5f5fa; border-radius: 8px; padding: 16px; }\n    .stat-value { font-size: 28px; font-weight: 700; color: #6b46c1; }\n    .stat-label { font-size: 12px; color: #666; margin-top: 4px; }\n    h2 { font-size: 16px; margin: 24px 0 12px; }\n    table { width: 100%; border-collapse: collapse; font-size: 13px; }\n    th { text-align: left; padding: 8px; background: #f5f5fa; }\n    td { padding: 8px; border-bottom: 1px solid #eee; }\n    .footer { font-size: 12px; color: #999; margin-top: 32px; }\n  </style>\n</head>\n<body>\n  <h1>Warmr — Weekoverzicht</h1>\n  <div class=\"period\">${periodFrom} – ${periodTo}</div>\n\n  <div class=\"stat-grid\">\n    <div class=\"stat\">\n      <div class=\"stat-value\">${r.warmup?.emails_sent ?? 0}</div>\n      <div class=\"stat-label\">Warmup emails verstuurd</div>\n    </div>\n    <div class=\"stat\">\n      <div class=\"stat-value\">${r.campaigns?.emails_sent ?? 0}</div>\n      <div class=\"stat-label\">Campagne emails verstuurd</div>\n    </div>\n    <div class=\"stat\">\n      <div class=\"stat-value\">${r.inboxes?.avg_reputation_score ?? 0}</div>\n      <div class=\"stat-label\">Gemiddelde reputatie</div>\n    </div>\n    <div class=\"stat\">\n      <div class=\"stat-value\">${pct(r.campaigns?.replied, r.campaigns?.emails_sent)}</div>\n      <div class=\"stat-label\">Reply rate campagnes</div>\n    </div>\n    <div class=\"stat\">\n      <div class=\"stat-value\">${r.warmup?.spam_rescues ?? 0}</div>\n      <div class=\"stat-label\">Spam rescues</div>\n    </div>\n    <div class=\"stat\">\n      <div class=\"stat-value\">${r.bounces?.hard ?? 0} / ${r.bounces?.soft ?? 0}</div>\n      <div class=\"stat-label\">Hard / soft bounces</div>\n    </div>\n  </div>\n\n  <h2>Inboxes (top 10 op reputatie)</h2>\n  <table>\n    <thead><tr><th>Email</th><th>Domein</th><th>Reputatie</th><th>Status</th></tr></thead>\n    <tbody>${inboxRows || '<tr><td colspan=\"4\">Geen inboxes gevonden</td></tr>'}</tbody>\n  </table>\n\n  <div class=\"footer\">\n    Gegenereerd door Warmr op ${new Date().toLocaleString('nl-NL')}\n  </div>\n</body>\n</html>`;\n\nreturn { json: { ...r, html, subject: `Warmr weekoverzicht — ${periodFrom} t/m ${periodTo}` } };"
+      }
+    },
+    {
+      "id": "c9d0e1f2-0009-0009-0009-000000000005",
+      "name": "Send report via Resend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.resend.com/emails",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.RESEND_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ from: $env.WARMR_ALERT_FROM || 'rapport@warmr.app', to: [$env.WARMR_ALERT_TO], subject: $json.subject, html: $json.html }) }}",
+        "options": {}
+      },
+      "continueOnFail": true
+    },
+    {
+      "id": "c9d0e1f2-0009-0009-0009-000000000006",
+      "name": "Email sent — done",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1440, 200],
+      "parameters": {}
+    },
+    {
+      "id": "c9d0e1f2-0009-0009-0009-000000000007",
+      "name": "Log report error",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 420],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/warmup_logs",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ action: 'error', notes: 'n8n weekly-report failed: ' + ($json.error || JSON.stringify($json)), timestamp: new Date().toISOString() }) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Schedule: Monday 08:00": {
+      "main": [
+        [{ "node": "GET /analytics/weekly-report", "type": "main", "index": 0 }]
+      ]
+    },
+    "GET /analytics/weekly-report": {
+      "main": [
+        [{ "node": "Success?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Success?": {
+      "main": [
+        [{ "node": "Build HTML report", "type": "main", "index": 0 }],
+        [{ "node": "Log report error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build HTML report": {
+      "main": [
+        [{ "node": "Send report via Resend", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send report via Resend": {
+      "main": [
+        [{ "node": "Email sent — done", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true },
+  "meta": { "templateCredsSetupCompleted": true, "instanceId": "warmr" },
+  "notes": "Every Monday at 08:00: fetches the weekly deliverability report and sends a formatted HTML email via Resend.\n\nThe report includes:\n  - Warmup emails sent\n  - Campaign emails sent, reply rate, bounce rate\n  - Average reputation score\n  - Spam rescues + complaints\n  - Top 10 inboxes by reputation score\n\nRequired env vars:\n  RESEND_API_KEY      — Resend API key (resend.com)\n  WARMR_ALERT_FROM    — sender address (verified in Resend)\n  WARMR_ALERT_TO      — recipient address for the report"
+}

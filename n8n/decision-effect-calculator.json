@@ -1,0 +1,210 @@
+{
+  "name": "Warmr — Decision Effect Calculator",
+  "nodes": [
+    {
+      "id": "de000001-0001-0001-0001-000000000001",
+      "name": "Schedule: Every 12 hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 */12 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "de000001-0001-0001-0001-000000000002",
+      "name": "Query: decisions without effect (7+ days old)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/decision_log",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Prefer", "value": "return=representation" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "effect", "value": "is.null" },
+            { "name": "created_at", "value": "lte.{{ new Date(Date.now() - 7*24*60*60*1000).toISOString() }}" },
+            { "name": "entity_type", "value": "in.(inbox,campaign)" },
+            { "name": "select", "value": "id,client_id,entity_id,entity_type,created_at" },
+            { "name": "limit", "value": "20" }
+          ]
+        },
+        "options": { "timeout": 20000 }
+      },
+      "continueOnFail": true
+    },
+    {
+      "id": "de000001-0001-0001-0001-000000000003",
+      "name": "Any decisions to process?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 300],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "cond-len",
+              "leftValue": "={{ $json.length > 0 }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "de000001-0001-0001-0001-000000000004",
+      "name": "Split decisions",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [960, 200],
+      "parameters": {
+        "batchSize": 1
+      }
+    },
+    {
+      "id": "de000001-0001-0001-0001-000000000005",
+      "name": "GET /decisions/{id}/effect",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, 200],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.WARMR_API_BASE }}/decisions/{{ $json.id }}/effect",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.WARMR_ADMIN_TOKEN }}" }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "id": "de000001-0001-0001-0001-000000000006",
+      "name": "Effect calculated?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1440, 200],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "cond-effect",
+              "leftValue": "={{ $json.effect !== null && $json.effect !== undefined && Object.keys($json.effect || {}).length > 0 }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "de000001-0001-0001-0001-000000000007",
+      "name": "Log calculated effect",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1680, 120],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "r1",
+              "name": "decision_id",
+              "value": "={{ $json.decision_id }}",
+              "type": "string"
+            },
+            {
+              "id": "r2",
+              "name": "effect_summary",
+              "value": "={{ JSON.stringify($json.effect) }}",
+              "type": "string"
+            },
+            {
+              "id": "r3",
+              "name": "calculated_at",
+              "value": "={{ new Date().toISOString() }}",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "de000001-0001-0001-0001-000000000008",
+      "name": "Not enough data yet",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1680, 320]
+    },
+    {
+      "id": "de000001-0001-0001-0001-000000000009",
+      "name": "No decisions to process",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [960, 420]
+    }
+  ],
+  "connections": {
+    "Schedule: Every 12 hours": {
+      "main": [
+        [{ "node": "Query: decisions without effect (7+ days old)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Query: decisions without effect (7+ days old)": {
+      "main": [
+        [{ "node": "Any decisions to process?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Any decisions to process?": {
+      "main": [
+        [{ "node": "Split decisions", "type": "main", "index": 0 }],
+        [{ "node": "No decisions to process", "type": "main", "index": 0 }]
+      ]
+    },
+    "Split decisions": {
+      "main": [
+        [{ "node": "GET /decisions/{id}/effect", "type": "main", "index": 0 }]
+      ]
+    },
+    "GET /decisions/{id}/effect": {
+      "main": [
+        [{ "node": "Effect calculated?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Effect calculated?": {
+      "main": [
+        [{ "node": "Log calculated effect", "type": "main", "index": 0 }],
+        [{ "node": "Not enough data yet", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true },
+  "meta": { "templateCredsSetupCompleted": true, "instanceId": "warmr" },
+  "notes": "Automatically calculates the measured effect of past decisions every 12 hours.\nTargets decision_log rows where effect IS NULL and created_at <= 7 days ago\n(enough post-decision history to compare before/after metrics).\nCalls GET /decisions/{id}/effect for each row — the endpoint computes\n7-day before vs 7-day after comparison and writes the result back to decision_log."
+}

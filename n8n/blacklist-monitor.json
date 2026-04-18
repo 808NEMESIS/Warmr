@@ -1,0 +1,182 @@
+{
+  "name": "Warmr — Blacklist Monitor",
+  "nodes": [
+    {
+      "id": "a7b8c9d0-0007-0007-0007-000000000001",
+      "name": "Schedule: Every 6h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "a7b8c9d0-0007-0007-0007-000000000002",
+      "name": "POST /domains/dns-check-all (blacklist)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WARMR_API_BASE }}/domains/dns-check-all?mode=blacklist",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.WARMR_API_TOKEN }}" }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "id": "a7b8c9d0-0007-0007-0007-000000000003",
+      "name": "Any domains blacklisted?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 300],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "cond-bl",
+              "leftValue": "={{ ($json.blacklisted || []).length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "a7b8c9d0-0007-0007-0007-000000000004",
+      "name": "All clean — no action",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [960, 200],
+      "parameters": {}
+    },
+    {
+      "id": "a7b8c9d0-0007-0007-0007-000000000005",
+      "name": "Build alert message",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [960, 420],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "msg-1",
+              "name": "subject",
+              "value": "=⚠️ Warmr: {{ $json.blacklisted.length }} domain(s) blacklisted",
+              "type": "string"
+            },
+            {
+              "id": "msg-2",
+              "name": "html",
+              "value": "={{ '<h2>Blacklist Alert</h2><p>' + $json.blacklisted.map(d => '<b>' + d.domain + '</b> (IP: ' + (d.ip || 'unknown') + ') listed in: ' + (d.listed_in || []).join(', ')).join('</p><p>') + '</p><p>Checked: ' + new Date().toISOString() + '</p>' }}",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "a7b8c9d0-0007-0007-0007-000000000006",
+      "name": "Send alert via Resend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, 420],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.resend.com/emails",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.RESEND_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ from: $env.WARMR_ALERT_FROM || 'alerts@warmr.app', to: [$env.WARMR_ALERT_TO], subject: $json.subject, html: $json.html }) }}",
+        "options": {}
+      },
+      "continueOnFail": true
+    },
+    {
+      "id": "a7b8c9d0-0007-0007-0007-000000000007",
+      "name": "Log blacklist hit",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1440, 420],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/warmup_logs",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ action: 'error', notes: 'BLACKLIST HIT: ' + JSON.stringify($('GET /domains/blacklist-check').item.json.blacklisted), timestamp: new Date().toISOString() }) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Schedule: Every 6h": {
+      "main": [
+        [{ "node": "POST /domains/dns-check-all (blacklist)", "type": "main", "index": 0 }]
+      ]
+    },
+    "POST /domains/dns-check-all (blacklist)": {
+      "main": [
+        [{ "node": "Any domains blacklisted?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Any domains blacklisted?": {
+      "main": [
+        [{ "node": "All clean — no action", "type": "main", "index": 0 }],
+        [{ "node": "Build alert message", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build alert message": {
+      "main": [
+        [{ "node": "Send alert via Resend", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send alert via Resend": {
+      "main": [
+        [{ "node": "Log blacklist hit", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true },
+  "meta": { "templateCredsSetupCompleted": true, "instanceId": "warmr" },
+  "notes": "Runs every 6 hours. Checks all client domains against 5 major DNSBLs via DNSBL reverse-IP lookup (no paid API).\nBlacklist hits are stored in blacklist_recoveries with step-by-step recovery guides. Alert email sent via Resend.\nDNS drift monitoring (SPF/DKIM/DMARC changes) runs separately in dns-monitor.json every 15 minutes.\n\nRequired env vars:\n  RESEND_API_KEY      — Resend API key\n  WARMR_ALERT_FROM    — sender address (e.g. alerts@yourdomain.com)\n  WARMR_ALERT_TO      — recipient for alerts (your team email)"
+}

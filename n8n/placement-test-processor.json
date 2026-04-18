@@ -1,0 +1,119 @@
+{
+  "name": "Warmr — Placement Test Processor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "minutes", "minutesInterval": 2 }]
+        }
+      },
+      "name": "Every 2 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.WARMR_API_URL }}/deliverability/process-placements",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.WARMR_API_TOKEN }}" }
+          ]
+        },
+        "method": "POST",
+        "options": { "timeout": 360000 }
+      },
+      "name": "Process Pending Placements",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [{ "value1": "={{ $json.ok }}", "value2": true }]
+        }
+      },
+      "name": "Check OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [{ "value1": "={{ $json.processed }}", "value2": 0, "operation": "larger" }]
+        }
+      },
+      "name": "Any processed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [900, 200]
+    },
+    {
+      "parameters": {},
+      "name": "Tests Completed",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1120, 140]
+    },
+    {
+      "parameters": {},
+      "name": "No Pending Tests",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1120, 260]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/warmup_logs",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "method": "POST",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "action", "value": "error" },
+            { "name": "notes", "value": "=Placement test processor failed: {{ $json.message || 'unknown error' }}" }
+          ]
+        }
+      },
+      "name": "Log Error",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [900, 400]
+    }
+  ],
+  "connections": {
+    "Every 2 min": {
+      "main": [[{ "node": "Process Pending Placements", "type": "main", "index": 0 }]]
+    },
+    "Process Pending Placements": {
+      "main": [[{ "node": "Check OK", "type": "main", "index": 0 }]]
+    },
+    "Check OK": {
+      "main": [
+        [{ "node": "Any processed?", "type": "main", "index": 0 }],
+        [{ "node": "Log Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Any processed?": {
+      "main": [
+        [{ "node": "Tests Completed", "type": "main", "index": 0 }],
+        [{ "node": "No Pending Tests", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": { "executionOrder": "v1" }
+}

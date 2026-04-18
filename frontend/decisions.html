@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Warmr — Beslissingen</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <style>
+    /* ── Decision-log specific ──── */
+    .filter-bar {
+      display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
+      margin-bottom: 1.5rem;
+    }
+    .filter-chip {
+      padding: .35rem .875rem; border-radius: 99px; font-size: .8rem;
+      font-weight: 600; cursor: pointer; border: 1.5px solid var(--border);
+      background: var(--surface); color: var(--muted); transition: all var(--transition);
+    }
+    .filter-chip.active {
+      border-color: var(--primary); background: #ede8ff; color: var(--primary);
+    }
+
+    .decision-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius-card); padding: 1.125rem 1.375rem;
+      margin-bottom: .875rem; box-shadow: var(--shadow-sm);
+      display: grid; grid-template-columns: auto 1fr auto;
+      gap: .875rem; align-items: start; cursor: pointer;
+      transition: box-shadow var(--transition), border-color var(--transition);
+    }
+    .decision-card:hover {
+      box-shadow: var(--shadow-md); border-color: var(--primary-lt);
+    }
+
+    .decision-icon {
+      width: 38px; height: 38px; border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1rem; flex-shrink: 0;
+    }
+    .icon-inbox_added       { background: #ede8ff; color: var(--primary); }
+    .icon-inbox_paused      { background: #fff3e0; color: #e67e22; }
+    .icon-inbox_resumed     { background: #d4f5ed; color: var(--success); }
+    .icon-campaign_created  { background: #ede8ff; color: var(--primary); }
+    .icon-campaign_activated{ background: #d4f5ed; color: var(--success); }
+    .icon-campaign_paused   { background: #fff3e0; color: #e67e22; }
+    .icon-send_time_changed { background: #e3f1ff; color: #0066cc; }
+    .icon-ab_applied        { background: #f3e5f5; color: #7b1fa2; }
+    .icon-suggestion_applied{ background: #e8f5e9; color: #2e7d32; }
+    .icon-domain_phase_changed { background: #e3f1ff; color: #0066cc; }
+    .icon-default           { background: #f5f5f5; color: var(--muted); }
+
+    .decision-meta {
+      font-size: .7rem; font-weight: 600; letter-spacing: .04em;
+      text-transform: uppercase; color: var(--muted); margin-bottom: .25rem;
+    }
+    .decision-title {
+      font-size: .9375rem; font-weight: 700; color: var(--text); margin-bottom: .2rem;
+    }
+    .decision-sub {
+      font-size: .8125rem; color: var(--muted);
+    }
+
+    .effect-badge {
+      display: inline-flex; align-items: center; gap: .3rem;
+      padding: .25rem .625rem; border-radius: 99px;
+      font-size: .75rem; font-weight: 700; white-space: nowrap;
+    }
+    .effect-positive { background: #d4f5ed; color: #00856d; }
+    .effect-negative { background: #fde8e4; color: #c0392b; }
+    .effect-neutral  { background: #f5f5f5; color: var(--muted); }
+    .effect-pending  { background: #ede8ff; color: var(--primary); cursor: pointer; }
+    .effect-pending:hover { background: #d8d0ff; }
+
+    /* Detail drawer */
+    .drawer-overlay {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,.4);
+      z-index: 200; backdrop-filter: blur(2px);
+    }
+    .drawer-overlay.open { display: block; }
+    .drawer {
+      position: fixed; top: 0; right: -480px; bottom: 0; width: 460px;
+      background: var(--surface); z-index: 201; box-shadow: var(--shadow-xl);
+      overflow-y: auto; transition: right 280ms cubic-bezier(.4,0,.2,1);
+      display: flex; flex-direction: column;
+    }
+    .drawer.open { right: 0; }
+    .drawer-header {
+      padding: 1.25rem 1.5rem; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      position: sticky; top: 0; background: var(--surface); z-index: 1;
+    }
+    .drawer-body { padding: 1.5rem; flex: 1; }
+
+    .detail-row {
+      display: flex; gap: 1rem; margin-bottom: .875rem; align-items: flex-start;
+    }
+    .detail-label {
+      width: 130px; flex-shrink: 0; font-size: .8rem; font-weight: 600;
+      color: var(--muted); padding-top: .1rem;
+    }
+    .detail-value { font-size: .875rem; color: var(--text); flex: 1; }
+
+    .state-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; margin-top: .5rem;
+    }
+    .state-box {
+      background: #f8f6ff; border-radius: 8px; padding: .75rem 1rem;
+    }
+    .state-box-label {
+      font-size: .7rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .04em; color: var(--muted); margin-bottom: .375rem;
+    }
+    .state-box-content { font-size: .8125rem; font-family: monospace; color: var(--text); }
+
+    .effect-panel {
+      background: #f8f6ff; border: 1px solid #e0d7ff; border-radius: 10px;
+      padding: 1rem 1.25rem; margin-top: .75rem;
+    }
+    .effect-metric-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: .375rem 0; border-bottom: 1px solid #ede8ff; font-size: .875rem;
+    }
+    .effect-metric-row:last-child { border-bottom: none; }
+    .effect-delta-pos { color: var(--success); font-weight: 700; }
+    .effect-delta-neg { color: var(--danger); font-weight: 700; }
+
+    /* Empty state */
+    .empty-state {
+      text-align: center; padding: 4rem 2rem; color: var(--muted);
+    }
+    .empty-state svg { margin: 0 auto 1rem; opacity: .35; }
+    .empty-state p { font-size: .9375rem; }
+
+    /* Skeleton */
+    .skel { height: 80px; border-radius: var(--radius-card); background: #f0f0f5;
+      margin-bottom: .875rem; animation: shimmer 1.4s ease-in-out infinite; }
+    @keyframes shimmer {
+      0%,100% { opacity: 1; } 50% { opacity: .5; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Sidebar ──────────────────────────────────────────────────────────── -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-mark">W</div>
+    <span class="logo-text">Warmr</span>
+  </div>
+
+  <div style="padding:.75rem 0;flex:1">
+    <div class="sidebar-section-label">Overzicht</div>
+    <a class="nav-link" href="dashboard.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+      Dashboard
+    </a>
+
+    <div class="sidebar-section-label">Campagnes</div>
+    <a class="nav-link" href="campaigns.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 9.8 19.79 19.79 0 0112 4.18a2 2 0 012 2V8l2 1.5"/></svg>
+      Campagnes
+    </a>
+    <a class="nav-link" href="leads.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+      Leads
+    </a>
+
+    <div class="sidebar-section-label">Inzichten</div>
+    <a class="nav-link active" href="decisions.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      Beslissingen
+    </a>
+    <a class="nav-link" href="experiments.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/></svg>
+      Experimenten
+    </a>
+
+    <div class="sidebar-section-label">Infrastructuur</div>
+    <a class="nav-link" href="inboxes.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+      Inboxes
+    </a>
+    <a class="nav-link" href="domains.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>
+      Domeinen
+    </a>
+
+    <div class="sidebar-section-label">Account</div>
+    <a class="nav-link" href="settings.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+      Instellingen
+    </a>
+  </div>
+
+  <div class="sidebar-footer">
+    <div style="display:flex;align-items:center;gap:.75rem">
+      <div class="avatar avatar-sm" id="sidebar-avatar">?</div>
+      <div style="flex:1;min-width:0">
+        <div class="text-sm font-semi truncate" id="sidebar-name">Laden…</div>
+        <div class="text-xs text-muted" id="sidebar-plan">Pro plan</div>
+      </div>
+      <button class="btn-icon" onclick="logout()" title="Uitloggen">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      </button>
+    </div>
+  </div>
+</aside>
+
+<!-- ── Topbar ─────────────────────────────────────────────────────────────── -->
+<header class="topbar">
+  <div class="topbar-left">
+    <h1 style="font-size:1.25rem;font-family:var(--font-disp);font-weight:400">Beslissingen</h1>
+  </div>
+  <div class="topbar-right">
+    <div id="topbar-client" style="display:flex;align-items:center;gap:.625rem;cursor:pointer" onclick="window.location.href='settings.html'">
+      <div class="avatar avatar-sm">?</div>
+      <span class="text-sm font-semi truncate" style="max-width:120px">—</span>
+    </div>
+  </div>
+</header>
+
+<!-- ── Main ───────────────────────────────────────────────────────────────── -->
+<main class="main-content">
+
+  <!-- Stats strip -->
+  <div class="stats-grid" id="stats-strip" style="display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-bottom:1.75rem">
+    <div class="stat-card" id="stat-total">
+      <div class="stat-value" id="val-total">—</div>
+      <div class="stat-label">Totaal beslissingen</div>
+    </div>
+    <div class="stat-card" id="stat-effect-calc">
+      <div class="stat-value" id="val-effect-calc">—</div>
+      <div class="stat-label">Met effect-meting</div>
+    </div>
+    <div class="stat-card" id="stat-pending-effect">
+      <div class="stat-value text-primary" id="val-pending-effect">—</div>
+      <div class="stat-label">Wachten op effect</div>
+    </div>
+    <div class="stat-card" id="stat-positive">
+      <div class="stat-value text-success" id="val-positive">—</div>
+      <div class="stat-label">Positief effect</div>
+    </div>
+  </div>
+
+  <!-- Filter bar -->
+  <div class="filter-bar">
+    <button class="filter-chip active" data-filter="all" onclick="setFilter(this,'all')">Alles</button>
+    <button class="filter-chip" data-filter="inbox" onclick="setFilter(this,'inbox')">Inboxes</button>
+    <button class="filter-chip" data-filter="campaign" onclick="setFilter(this,'campaign')">Campagnes</button>
+    <button class="filter-chip" data-filter="domain" onclick="setFilter(this,'domain')">Domeinen</button>
+    <button class="filter-chip" data-filter="sequence_step" onclick="setFilter(this,'sequence_step')">Sequenties</button>
+    <div style="margin-left:auto">
+      <input class="form-input" id="search-input" type="text" placeholder="Zoeken…"
+             style="width:200px;font-size:.8125rem" oninput="renderDecisions()">
+    </div>
+  </div>
+
+  <!-- Decision list -->
+  <div id="decisions-container">
+    <div class="skel"></div><div class="skel"></div><div class="skel"></div>
+  </div>
+
+  <!-- Load more -->
+  <div id="load-more-wrap" style="text-align:center;margin-top:1.25rem;display:none">
+    <button class="btn btn-secondary" onclick="loadMore()">Meer laden</button>
+  </div>
+
+</main>
+
+<!-- ── Detail drawer ─────────────────────────────────────────────────────── -->
+<div class="drawer-overlay" id="drawer-overlay" onclick="closeDrawer()"></div>
+<div class="drawer" id="detail-drawer">
+  <div class="drawer-header">
+    <div>
+      <div id="drawer-meta" class="decision-meta" style="margin-bottom:.25rem">—</div>
+      <div id="drawer-title" style="font-size:1rem;font-weight:700;color:var(--text)">—</div>
+    </div>
+    <button class="btn-icon" onclick="closeDrawer()">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div class="drawer-body" id="drawer-body">
+    <!-- injected by JS -->
+  </div>
+</div>
+
+<script>
+// ── Config ────────────────────────────────────────────────────────────────
+const SUPABASE_URL  = 'https://zomdrygdcaenjnrrpcpw.supabase.co';
+const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpvbWRyeWdkY2FlbmpucnJwY3B3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ5NDU1OTIsImV4cCI6MjA5MDUyMTU5Mn0.placeholder';
+const API_BASE      = 'http://localhost:8000';
+
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+
+// ── Auth ──────────────────────────────────────────────────────────────────
+let _token = '';
+
+async function requireAuth() {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) { window.location.href = 'index.html'; return null; }
+  _token = session.access_token;
+  const user = session.user;
+  const initials = (user.email || '?').charAt(0).toUpperCase();
+  document.querySelectorAll('.avatar').forEach(el => el.textContent = initials);
+  document.getElementById('sidebar-name').textContent = user.email || '—';
+  return session;
+}
+
+async function logout() {
+  await sb.auth.signOut();
+  window.location.href = 'index.html';
+}
+
+function apiHeaders() {
+  return { 'Authorization': `Bearer ${_token}`, 'Content-Type': 'application/json' };
+}
+
+async function apiFetch(path, opts = {}) {
+  const r = await fetch(API_BASE + path, { ...opts, headers: { ...apiHeaders(), ...(opts.headers||{}) } });
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  return r.json();
+}
+
+// ── State ─────────────────────────────────────────────────────────────────
+let _decisions = [];
+let _filterType = 'all';
+let _offset = 0;
+const PAGE_SIZE = 50;
+
+// ── Decision type helpers ─────────────────────────────────────────────────
+const TYPE_LABELS = {
+  inbox_added:          'Inbox toegevoegd',
+  inbox_paused:         'Inbox gepauzeerd',
+  inbox_resumed:        'Inbox hervat',
+  campaign_created:     'Campagne aangemaakt',
+  campaign_activated:   'Campagne geactiveerd',
+  campaign_paused:      'Campagne gepauzeerd',
+  send_time_changed:    'Verzendtijd gewijzigd',
+  ab_applied:           'A/B winnaar toegepast',
+  suggestion_applied:   'Suggestie toegepast',
+  sequence_edited:      'Sequentie bewerkt',
+  domain_phase_changed: 'DMARC fase gewijzigd',
+};
+
+const TYPE_ICONS = {
+  inbox_added:          '➕',
+  inbox_paused:         '⏸',
+  inbox_resumed:        '▶',
+  campaign_created:     '📋',
+  campaign_activated:   '🚀',
+  campaign_paused:      '⏸',
+  send_time_changed:    '🕐',
+  ab_applied:           '🧪',
+  suggestion_applied:   '✨',
+  sequence_edited:      '✏️',
+  domain_phase_changed: '🛡',
+};
+
+function typeLabel(t) { return TYPE_LABELS[t] || t.replace(/_/g,' '); }
+function typeIcon(t)  { return TYPE_ICONS[t] || '•'; }
+function typeIconClass(t) { return `icon-${t}`; }
+
+function formatDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString('nl-NL', { day:'numeric', month:'short', year:'numeric' })
+    + ' ' + d.toLocaleTimeString('nl-NL', { hour:'2-digit', minute:'2-digit' });
+}
+
+// ── Effect badge ──────────────────────────────────────────────────────────
+function effectBadge(decision, onclick) {
+  const effect = decision.effect;
+  if (effect === null || effect === undefined) {
+    return `<span class="effect-badge effect-pending" onclick="${onclick}" title="Klik om effect te berekenen">⏳ Berekenen</span>`;
+  }
+  // Summarise first metric
+  const keys = Object.keys(effect);
+  if (!keys.length) return `<span class="effect-badge effect-neutral">– Geen data</span>`;
+  const metric = keys[0];
+  const delta = effect[metric]?.delta ?? 0;
+  const sign = delta > 0 ? '+' : '';
+  const cls  = delta > 0.005 ? 'effect-positive' : delta < -0.005 ? 'effect-negative' : 'effect-neutral';
+  const label = metric === 'reputation_score'
+    ? `${sign}${delta.toFixed(1)} rep.`
+    : `${sign}${(delta * 100).toFixed(1)}pp ${metric.replace(/_/g,' ')}`;
+  return `<span class="effect-badge ${cls}">${label}</span>`;
+}
+
+// ── Render ────────────────────────────────────────────────────────────────
+function renderDecisions() {
+  const query = (document.getElementById('search-input').value || '').toLowerCase();
+  let filtered = _decisions.filter(d => {
+    if (_filterType !== 'all' && d.entity_type !== _filterType) return false;
+    if (query) {
+      const haystack = [d.decision_type, d.entity_name, d.reason].join(' ').toLowerCase();
+      if (!haystack.includes(query)) return false;
+    }
+    return true;
+  });
+
+  // Stats
+  document.getElementById('val-total').textContent = _decisions.length;
+  const withEffect = _decisions.filter(d => d.effect !== null && d.effect !== undefined).length;
+  document.getElementById('val-effect-calc').textContent = withEffect;
+  document.getElementById('val-pending-effect').textContent = _decisions.length - withEffect;
+  let positiveCount = 0;
+  _decisions.forEach(d => {
+    if (!d.effect) return;
+    Object.values(d.effect).forEach(v => { if ((v?.delta ?? 0) > 0.005) positiveCount++; });
+  });
+  document.getElementById('val-positive').textContent = positiveCount;
+
+  const container = document.getElementById('decisions-container');
+  if (!filtered.length) {
+    container.innerHTML = `<div class="empty-state">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      <p>Geen beslissingen gevonden${query ? ' voor "' + query + '"' : ''}.</p>
+    </div>`;
+    return;
+  }
+
+  container.innerHTML = filtered.map(d => `
+    <div class="decision-card" onclick="openDrawer('${d.id}')">
+      <div class="decision-icon ${typeIconClass(d.decision_type)}">${typeIcon(d.decision_type)}</div>
+      <div>
+        <div class="decision-meta">${d.entity_type || '—'} · ${formatDate(d.created_at)}</div>
+        <div class="decision-title">${typeLabel(d.decision_type)}</div>
+        <div class="decision-sub">${d.entity_name || '—'}${d.reason ? ' — ' + d.reason : ''}</div>
+      </div>
+      <div style="display:flex;align-items:center">
+        ${effectBadge(d, `event.stopPropagation();calcEffect('${d.id}')`)}
+      </div>
+    </div>`).join('');
+}
+
+function setFilter(el, type) {
+  _filterType = type;
+  document.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  renderDecisions();
+}
+
+// ── Load decisions ────────────────────────────────────────────────────────
+async function loadDecisions(reset = true) {
+  if (reset) { _offset = 0; _decisions = []; }
+
+  try {
+    const params = new URLSearchParams({ limit: PAGE_SIZE, offset: _offset });
+    const data = await apiFetch(`/decisions?${params}`);
+    _decisions = reset ? data : [..._decisions, ...data];
+    _offset += data.length;
+    document.getElementById('load-more-wrap').style.display = data.length >= PAGE_SIZE ? 'block' : 'none';
+    renderDecisions();
+  } catch (e) {
+    document.getElementById('decisions-container').innerHTML =
+      `<div class="empty-state"><p>Fout bij laden: ${e.message}</p></div>`;
+  }
+}
+
+function loadMore() { loadDecisions(false); }
+
+// ── Drawer ────────────────────────────────────────────────────────────────
+async function openDrawer(decisionId) {
+  const d = _decisions.find(x => x.id === decisionId);
+  if (!d) return;
+
+  document.getElementById('drawer-meta').textContent = `${d.entity_type || '—'} · ${formatDate(d.created_at)}`;
+  document.getElementById('drawer-title').textContent = typeLabel(d.decision_type);
+
+  const beforeJson  = d.before_state  ? JSON.stringify(d.before_state, null, 2)  : '—';
+  const afterJson   = d.after_state   ? JSON.stringify(d.after_state, null, 2)   : '—';
+
+  let effectHtml = '';
+  if (d.effect) {
+    const metrics = Object.entries(d.effect).map(([k, v]) => {
+      const delta = v?.delta ?? 0;
+      const cls = delta > 0.005 ? 'effect-delta-pos' : delta < -0.005 ? 'effect-delta-neg' : '';
+      return `<div class="effect-metric-row">
+        <span>${k.replace(/_/g,' ')}</span>
+        <span>${v?.before ?? '—'} → ${v?.after ?? '—'}
+          <span class="${cls}" style="margin-left:.5rem">(${delta > 0 ? '+' : ''}${
+            k === 'reputation_score' ? delta.toFixed(2) : (delta * 100).toFixed(2) + 'pp'
+          })</span>
+        </span>
+      </div>`;
+    }).join('');
+    effectHtml = `<div class="effect-panel"><div style="font-size:.8rem;font-weight:700;color:var(--muted);margin-bottom:.625rem">GEMETEN EFFECT</div>${metrics}</div>`;
+  } else {
+    effectHtml = `<button class="btn btn-secondary" style="margin-top:.5rem;width:100%" onclick="calcEffect('${d.id}')">
+      ⏳ Effect berekenen
+    </button>`;
+  }
+
+  document.getElementById('drawer-body').innerHTML = `
+    <div class="detail-row">
+      <div class="detail-label">Type</div>
+      <div class="detail-value">${typeLabel(d.decision_type)}</div>
+    </div>
+    <div class="detail-row">
+      <div class="detail-label">Entity</div>
+      <div class="detail-value">${d.entity_name || '—'} <span class="text-muted">(${d.entity_type || '—'})</span></div>
+    </div>
+    ${d.reason ? `<div class="detail-row"><div class="detail-label">Reden</div><div class="detail-value">${d.reason}</div></div>` : ''}
+    <div class="detail-row">
+      <div class="detail-label">Gemaakt door</div>
+      <div class="detail-value">${d.made_by || 'client'}</div>
+    </div>
+    <div class="detail-row">
+      <div class="detail-label">Datum</div>
+      <div class="detail-value">${formatDate(d.created_at)}</div>
+    </div>
+
+    <div style="margin:1.25rem 0 .5rem;font-size:.8rem;font-weight:700;color:var(--muted)">VOOR / NA</div>
+    <div class="state-grid">
+      <div class="state-box">
+        <div class="state-box-label">Voor</div>
+        <div class="state-box-content">${beforeJson}</div>
+      </div>
+      <div class="state-box">
+        <div class="state-box-label">Na</div>
+        <div class="state-box-content">${afterJson}</div>
+      </div>
+    </div>
+
+    <div style="margin-top:1.25rem">${effectHtml}</div>
+  `;
+
+  document.getElementById('drawer-overlay').classList.add('open');
+  document.getElementById('detail-drawer').classList.add('open');
+}
+
+function closeDrawer() {
+  document.getElementById('drawer-overlay').classList.remove('open');
+  document.getElementById('detail-drawer').classList.remove('open');
+}
+
+// ── Calculate effect ──────────────────────────────────────────────────────
+async function calcEffect(decisionId) {
+  try {
+    const result = await apiFetch(`/decisions/${decisionId}/effect`);
+    // Update local cache
+    const idx = _decisions.findIndex(d => d.id === decisionId);
+    if (idx !== -1) _decisions[idx].effect = result.effect;
+    renderDecisions();
+    // Re-open drawer with fresh data
+    if (document.getElementById('detail-drawer').classList.contains('open')) {
+      openDrawer(decisionId);
+    }
+  } catch (e) {
+    alert('Kon effect niet berekenen: ' + e.message);
+  }
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────
+(async () => {
+  await requireAuth();
+  await loadDecisions();
+})();
+</script>
+</body>
+</html>

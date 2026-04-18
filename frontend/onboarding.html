@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Warmr — Aan de slag</title>
+  <link rel="icon" type="image/png" href="logo-warmr.png">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <style>
+    body { background: var(--bg); }
+    .onboarding-shell {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .onboard-topbar {
+      height: 64px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 2rem;
+      box-shadow: var(--shadow-sm);
+    }
+    .onboarding-main {
+      flex: 1;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 3rem 1.5rem 4rem;
+    }
+    .onboarding-card {
+      width: 100%;
+      max-width: 680px;
+    }
+    .step-pane { display: none; }
+    .step-pane.active { display: block; }
+    .step-title { font-size: 1.625rem; margin-bottom: .5rem; }
+    .step-sub { color: var(--muted); margin-bottom: 2rem; font-size: .9375rem; line-height: 1.6; }
+
+    /* ── Intro screen ──────────────────────────────────────────────────── */
+    .intro-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #1a1035 0%, #2d1b69 30%, #4a2c8a 60%, #6b3fa0 100%);
+      overflow: hidden;
+      transition: opacity .6s ease, transform .6s ease;
+    }
+    .intro-overlay.fade-out {
+      opacity: 0;
+      transform: scale(1.02);
+      pointer-events: none;
+    }
+    .intro-overlay::before {
+      content: '';
+      position: absolute;
+      width: 600px; height: 600px;
+      background: radial-gradient(circle, rgba(139,92,246,.3) 0%, transparent 70%);
+      top: -100px; right: -100px;
+      animation: pulse-glow 4s ease-in-out infinite;
+    }
+    .intro-overlay::after {
+      content: '';
+      position: absolute;
+      width: 500px; height: 500px;
+      background: radial-gradient(circle, rgba(99,60,200,.25) 0%, transparent 70%);
+      bottom: -80px; left: -80px;
+      animation: pulse-glow 5s ease-in-out infinite reverse;
+    }
+    @keyframes pulse-glow {
+      0%, 100% { transform: scale(1); opacity: .6; }
+      50% { transform: scale(1.15); opacity: 1; }
+    }
+
+    .intro-content {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      color: #fff;
+      max-width: 580px;
+      padding: 2rem;
+      animation: intro-enter .8s ease-out both;
+    }
+    @keyframes intro-enter {
+      from { opacity: 0; transform: translateY(30px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .intro-logo {
+      width: 72px; height: 72px;
+      border-radius: 18px;
+      background: rgba(255,255,255,.15);
+      backdrop-filter: blur(12px);
+      display: flex; align-items: center; justify-content: center;
+      margin: 0 auto 2rem;
+      font-family: var(--font-disp);
+      font-size: 2rem;
+      font-weight: 700;
+      color: #fff;
+      box-shadow: 0 8px 32px rgba(0,0,0,.3);
+      animation: intro-enter .8s ease-out .15s both;
+    }
+    .intro-title {
+      font-family: var(--font-disp);
+      font-size: 2.75rem;
+      font-weight: 700;
+      line-height: 1.15;
+      margin-bottom: 1.25rem;
+      animation: intro-enter .8s ease-out .3s both;
+    }
+    .intro-title span {
+      background: linear-gradient(90deg, #c4b5fd, #a78bfa, #f0abfc);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .intro-desc {
+      font-size: 1.125rem;
+      line-height: 1.7;
+      color: rgba(255,255,255,.75);
+      margin-bottom: 2.5rem;
+      animation: intro-enter .8s ease-out .45s both;
+    }
+    .intro-features {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin-bottom: 3rem;
+      animation: intro-enter .8s ease-out .6s both;
+    }
+    .intro-feature {
+      background: rgba(255,255,255,.08);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,.1);
+      border-radius: 12px;
+      padding: 1.125rem 1.25rem;
+      text-align: left;
+    }
+    .intro-feature-icon {
+      font-size: 1.25rem;
+      margin-bottom: .5rem;
+    }
+    .intro-feature-title {
+      font-weight: 600;
+      font-size: .9375rem;
+      margin-bottom: .25rem;
+    }
+    .intro-feature-desc {
+      font-size: .8125rem;
+      color: rgba(255,255,255,.55);
+      line-height: 1.5;
+    }
+    .intro-cta {
+      display: inline-flex;
+      align-items: center;
+      gap: .5rem;
+      padding: .875rem 2.5rem;
+      font-size: 1.0625rem;
+      font-weight: 600;
+      color: #1a1035;
+      background: #fff;
+      border: none;
+      border-radius: 12px;
+      cursor: pointer;
+      box-shadow: 0 4px 24px rgba(0,0,0,.2);
+      transition: all .2s ease;
+      animation: intro-enter .8s ease-out .75s both;
+    }
+    .intro-cta:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 32px rgba(0,0,0,.3);
+    }
+    .intro-cta svg { transition: transform .2s ease; }
+    .intro-cta:hover svg { transform: translateX(3px); }
+
+    /* ── Rest of onboarding styles ─────────────────────────────────── */
+    .provider-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: .75rem;
+      margin-bottom: 1rem;
+    }
+    .provider-btn {
+      border: 2px solid var(--border);
+      border-radius: var(--radius-card);
+      padding: 1rem;
+      text-align: center;
+      cursor: pointer;
+      transition: all var(--transition);
+      background: var(--surface);
+    }
+    .provider-btn:hover { border-color: var(--primary); }
+    .provider-btn.selected { border-color: var(--primary); background: #f4f1ff; }
+    .provider-btn .provider-icon { font-size: 1.5rem; margin-bottom: .375rem; }
+    .provider-btn .provider-name { font-size: .875rem; font-weight: 600; color: var(--text); }
+    .info-box {
+      background: #f4f1ff;
+      border: 1px solid #d8d0ff;
+      border-radius: var(--radius-input);
+      padding: 1rem 1.25rem;
+      font-size: .875rem;
+      color: var(--text);
+      line-height: 1.6;
+      margin-bottom: 1rem;
+    }
+    .info-box strong { color: var(--primary); }
+    .warning-box {
+      background: #fff9ed;
+      border: 1px solid #f0e0a0;
+      border-radius: var(--radius-input);
+      padding: 1rem 1.25rem;
+      font-size: .875rem;
+      color: #7a5c00;
+      line-height: 1.6;
+    }
+    .success-check {
+      width: 72px; height: 72px; border-radius: 50%;
+      background: var(--gradient);
+      display: flex; align-items: center; justify-content: center;
+      margin: 0 auto 1.5rem;
+      box-shadow: var(--shadow-xl);
+    }
+    .success-check svg { color: #fff; }
+    .dns-step-label {
+      display: inline-flex; align-items: center; gap: .375rem;
+      font-size: .75rem; font-weight: 700; letter-spacing: .06em;
+      text-transform: uppercase; color: var(--muted);
+      margin-bottom: .875rem; margin-top: 1.25rem;
+    }
+    .network-account {
+      display: flex;
+      align-items: center;
+      gap: .75rem;
+      padding: .75rem;
+      background: #f8f7ff;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-input);
+      margin-bottom: .5rem;
+      font-size: .875rem;
+    }
+    .network-account .remove-btn {
+      margin-left: auto;
+      color: var(--muted);
+      cursor: pointer;
+      padding: .2rem;
+      border-radius: 4px;
+    }
+    .network-account .remove-btn:hover { color: var(--danger); background: #fde8e4; }
+  </style>
+</head>
+<body>
+
+<!-- ── Intro overlay ──────────────────────────────────────────────────── -->
+<div class="intro-overlay" id="intro-overlay">
+  <div class="intro-content">
+    <div class="intro-logo">W</div>
+    <h1 class="intro-title">Welkom bij <span>Warmr</span></h1>
+    <p class="intro-desc">
+      Jouw e-mail deliverability platform. Warmr warmt je inboxes op,
+      monitort reputatie, en zorgt dat je e-mails in de inbox landen
+      — niet in spam. Volledig in eigen beheer, zonder vendor lock-in.
+    </p>
+    <div class="intro-features">
+      <div class="intro-feature">
+        <div class="intro-feature-icon">&#9993;</div>
+        <div class="intro-feature-title">Inbox warmup</div>
+        <div class="intro-feature-desc">Bouw geleidelijk reputatie op met AI-gegenereerde e-mails en realistische engagement.</div>
+      </div>
+      <div class="intro-feature">
+        <div class="intro-feature-icon">&#9881;</div>
+        <div class="intro-feature-title">DNS &amp; reputatie</div>
+        <div class="intro-feature-desc">SPF, DKIM, DMARC — automatisch gemonitord. Reputatiescore per inbox in real-time.</div>
+      </div>
+      <div class="intro-feature">
+        <div class="intro-feature-icon">&#128202;</div>
+        <div class="intro-feature-title">Campagnes</div>
+        <div class="intro-feature-desc">Zodra je inbox warm is, stuur je campagnes met optimale timing en inbox-rotatie.</div>
+      </div>
+      <div class="intro-feature">
+        <div class="intro-feature-icon">&#128274;</div>
+        <div class="intro-feature-title">Self-hosted</div>
+        <div class="intro-feature-desc">Geen externe warmup-netwerken. Jouw data, jouw servers, GDPR-compliant by design.</div>
+      </div>
+    </div>
+    <button class="intro-cta" onclick="dismissIntro()">
+      Aan de slag
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+    </button>
+  </div>
+</div>
+
+<!-- ── Onboarding shell ───────────────────────────────────────────────── -->
+<div class="onboarding-shell">
+  <!-- Top bar -->
+  <div class="onboard-topbar">
+    <div class="logo">
+      <img src="logo-warmr.png" alt="Warmr" style="height:36px;width:auto;max-width:160px;object-fit:contain">
+    </div>
+    <div style="display:flex;align-items:center;gap:1rem">
+      <span class="text-sm text-muted" id="onboard-step-label">Stap 1 van 4</span>
+      <button class="btn btn-ghost btn-sm" onclick="logout()">Uitloggen</button>
+    </div>
+  </div>
+
+  <div class="onboarding-main">
+    <div class="onboarding-card">
+
+      <!-- Wizard progress -->
+      <div class="wizard-progress" id="wizard-progress"></div>
+
+      <!-- Step 1: Domain -->
+      <div class="step-pane active card" id="step-1">
+        <div class="card-body">
+          <h2 class="step-title">Voeg je eerste domein toe</h2>
+          <p class="step-sub">Warmr stuurt e-mails vanuit jouw eigen domeinen. Voeg hier je verzenddomein in en configureer de DNS-records zodat e-mails in de inbox belanden.</p>
+
+          <div class="form-group" style="margin-bottom:1.25rem">
+            <label class="form-label">Domein</label>
+            <input id="domain-input" type="text" class="form-input" placeholder="jouwdomein.nl" oninput="updateDnsTable()">
+            <span class="form-hint">Gebruik een apart (sub)domein voor e-mail verzenden — niet je hoofddomein.</span>
+          </div>
+          <div class="form-group" style="margin-bottom:1.5rem">
+            <label class="form-label">Registrar</label>
+            <select id="registrar-input" class="form-select">
+              <option value="">— Kies registrar —</option>
+              <option value="transip">TransIP</option>
+              <option value="namecheap">Namecheap</option>
+              <option value="godaddy">GoDaddy</option>
+              <option value="cloudflare">Cloudflare</option>
+              <option value="anders">Anders</option>
+            </select>
+          </div>
+
+          <div class="dns-step-label">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            Voeg deze DNS-records toe bij je registrar
+          </div>
+
+          <div class="card" style="padding:0;overflow:hidden;margin-bottom:1.5rem">
+            <table class="dns-table" id="dns-table">
+              <thead>
+                <tr>
+                  <th>Type</th>
+                  <th>Naam / Host</th>
+                  <th>Waarde</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="dns-tbody"></tbody>
+            </table>
+          </div>
+
+          <div class="info-box">
+            <strong>Volgorde:</strong> SPF → DKIM → DMARC fase 1 → test op mail-tester.com (min. 8/10) → dan pas warmup starten.
+          </div>
+        </div>
+        <div class="card-footer" style="display:flex;justify-content:flex-end;gap:.75rem">
+          <button class="btn btn-primary" onclick="saveDomain()">Domein opslaan &amp; verder</button>
+        </div>
+      </div>
+
+      <!-- Step 2: Inbox -->
+      <div class="step-pane card" id="step-2">
+        <div class="card-body">
+          <h2 class="step-title">Koppel je eerste inbox</h2>
+          <p class="step-sub">Warmr verbindt via SMTP/IMAP met je inbox. Gebruik een app-wachtwoord — nooit je inlogwachtwoord.</p>
+
+          <div style="margin-bottom:1.5rem">
+            <label class="form-label" style="margin-bottom:.75rem;display:block">E-mailprovider</label>
+            <div class="provider-grid">
+              <div class="provider-btn selected" data-provider="google" onclick="selectProvider(this)">
+                <div class="provider-icon">&#128309;</div>
+                <div class="provider-name">Google Workspace</div>
+              </div>
+              <div class="provider-btn" data-provider="microsoft" onclick="selectProvider(this)">
+                <div class="provider-icon">&#128999;</div>
+                <div class="provider-name">Microsoft 365</div>
+              </div>
+              <div class="provider-btn" data-provider="other" onclick="selectProvider(this)">
+                <div class="provider-icon">&#128231;</div>
+                <div class="provider-name">Overig</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-group" style="margin-bottom:1.125rem">
+            <label class="form-label">E-mailadres</label>
+            <input id="inbox-email" type="email" class="form-input" placeholder="outreach@jouwdomein.nl">
+          </div>
+          <div class="form-group" style="margin-bottom:1.5rem">
+            <label class="form-label">App-wachtwoord</label>
+            <input id="inbox-pw" type="password" class="form-input" placeholder="app-specifiek wachtwoord">
+            <span class="form-hint" id="app-pw-hint">
+              Google: Google Account → Beveiliging → App-wachtwoorden.
+            </span>
+          </div>
+
+          <div class="info-box">
+            Warmup start automatisch op <strong>dag 1: 5–10 e-mails</strong>. Volume stijgt wekelijks.
+            Voeg na onboarding meer inboxes toe via <em>Inboxes → + Inbox</em>.
+          </div>
+        </div>
+        <div class="card-footer" style="display:flex;justify-content:space-between">
+          <button class="btn btn-ghost" onclick="prevStep()">&#8592; Terug</button>
+          <button class="btn btn-primary" onclick="saveInbox()">Inbox koppelen &amp; verder</button>
+        </div>
+      </div>
+
+      <!-- Step 3: Warmup network -->
+      <div class="step-pane card" id="step-3">
+        <div class="card-body">
+          <h2 class="step-title">Warmup netwerk instellen</h2>
+          <p class="step-sub">
+            Het warmup netwerk bestaat uit Gmail-accounts die e-mails ontvangen, openen, en beantwoorden.
+            Hoe meer accounts, hoe natuurlijker het patroon. <strong>Aanbevolen: 20–30 accounts.</strong>
+          </p>
+
+          <div class="warning-box" style="margin-bottom:1.5rem">
+            &#9888;&#65039; Gebruik <strong>geen persoonlijke</strong> Gmail-accounts. Maak gratis Gmail-accounts aan specifiek voor dit doel. Activeer 2FA en genereer een app-wachtwoord.
+          </div>
+
+          <div style="display:flex;gap:.75rem;margin-bottom:1rem">
+            <div class="form-group" style="flex:1">
+              <label class="form-label">Gmail-adres</label>
+              <input id="net-email" type="email" class="form-input" placeholder="warmup.account@gmail.com">
+            </div>
+            <div class="form-group" style="flex:1">
+              <label class="form-label">App-wachtwoord</label>
+              <input id="net-pw" type="password" class="form-input" placeholder="xxxx xxxx xxxx xxxx">
+            </div>
+            <div style="display:flex;align-items:flex-end">
+              <button class="btn btn-secondary" onclick="addNetworkAccount()">Toevoegen</button>
+            </div>
+          </div>
+
+          <div id="network-list" style="margin-bottom:1.25rem;min-height:48px"></div>
+          <div id="network-count" class="text-sm text-muted" style="margin-bottom:1rem">0 accounts toegevoegd</div>
+
+          <div class="info-box">
+            Je kunt later meer accounts toevoegen via <em>Instellingen → Warmup Netwerk</em>.
+            Het systeem werkt al met 5+ accounts — de kwaliteit verbetert met meer accounts.
+          </div>
+        </div>
+        <div class="card-footer" style="display:flex;justify-content:space-between">
+          <button class="btn btn-ghost" onclick="prevStep()">&#8592; Terug</button>
+          <div style="display:flex;gap:.75rem">
+            <button class="btn btn-ghost" onclick="skipStep3()">Overslaan (later instellen)</button>
+            <button class="btn btn-primary" onclick="saveNetwork()">Opslaan &amp; verder</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4: Done -->
+      <div class="step-pane card" id="step-4">
+        <div class="card-body" style="text-align:center">
+          <div class="success-check">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+          </div>
+          <h2 class="step-title">Alles is ingesteld!</h2>
+          <p class="step-sub" style="max-width:480px;margin:0 auto 2rem">
+            Warmr start automatisch met de warmup. Hier is wat er de komende weken gaat gebeuren:
+          </p>
+
+          <div style="text-align:left;max-width:480px;margin:0 auto">
+            <div class="checklist-item">
+              <div class="checklist-icon active">&#128640;</div>
+              <div>
+                <div class="font-semi">Week 1 — Warmup gestart</div>
+                <div class="text-sm text-muted">5–10 e-mails per dag. Hoge reply rate gesimuleerd. Geen campagnes.</div>
+              </div>
+            </div>
+            <div class="checklist-item">
+              <div class="checklist-icon pending">&#128200;</div>
+              <div>
+                <div class="font-semi">Week 2 — Volume omhoog</div>
+                <div class="text-sm text-muted">15–25 e-mails per dag. Spam-map wordt gemonitord en geredde e-mails worden bijgehouden.</div>
+              </div>
+            </div>
+            <div class="checklist-item">
+              <div class="checklist-icon pending">&#127919;</div>
+              <div>
+                <div class="font-semi">Week 3–4 — Campagnes mogelijk</div>
+                <div class="text-sm text-muted">Bij reputatiescore &#8805; 70 kan je inbox campagne-e-mails versturen.</div>
+              </div>
+            </div>
+            <div class="checklist-item">
+              <div class="checklist-icon pending">&#9989;</div>
+              <div>
+                <div class="font-semi">Week 5+ — Volledig operationeel</div>
+                <div class="text-sm text-muted">50–80 e-mails per dag. Campagnes draaien naast doorlopende warmup.</div>
+              </div>
+            </div>
+          </div>
+
+          <div style="margin-top:2rem;display:flex;gap:.75rem;justify-content:center">
+            <a href="dashboard.html" class="btn btn-primary btn-lg" onclick="markOnboarded()">
+              Naar het dashboard
+            </a>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+<script>
+  let currentStep = 1;
+  const TOTAL_STEPS = 4;
+  let selectedProvider = 'google';
+  let networkAccounts = [];
+  let savedDomainId = null;
+  let userId = null;
+
+  const STEP_LABELS = ['Domein', 'Inbox', 'Netwerk', 'Klaar'];
+
+  // ── Intro ──────────────────────────────────────────────────────────────────
+  function dismissIntro() {
+    const overlay = document.getElementById('intro-overlay');
+    overlay.classList.add('fade-out');
+    if (userId) localStorage.setItem('warmr_intro_seen_' + userId, '1');
+    setTimeout(() => overlay.style.display = 'none', 600);
+  }
+
+  // ── Init ──────────────────────────────────────────────────────────────────
+  (async () => {
+    try {
+      const { session, client_id } = await requireAuth();
+      userId = client_id;
+
+      // Skip intro if already seen
+      if (localStorage.getItem('warmr_intro_seen_' + userId)) {
+        const overlay = document.getElementById('intro-overlay');
+        overlay.style.display = 'none';
+      }
+
+      // Restore progress from localStorage
+      const saved = localStorage.getItem('warmr_onboard_' + userId);
+      if (saved) {
+        const state = JSON.parse(saved);
+        currentStep = state.step || 1;
+        networkAccounts = state.networkAccounts || [];
+        savedDomainId = state.domainId || null;
+        renderNetwork();
+      }
+
+      renderProgress();
+      showStep(currentStep);
+      updateDnsTable();
+    } catch {}
+  })();
+
+  // ── Progress bar ──────────────────────────────────────────────────────────
+  function renderProgress() {
+    const container = document.getElementById('wizard-progress');
+    let html = '';
+    for (let i = 1; i <= TOTAL_STEPS; i++) {
+      const state = i < currentStep ? 'done' : i === currentStep ? 'active' : '';
+      const icon = i < currentStep
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>'
+        : i;
+      html += '<div class="wizard-step ' + state + '">' +
+          '<div class="wizard-step-num">' + icon + '</div>' +
+          '<span class="wizard-step-label">' + STEP_LABELS[i-1] + '</span>' +
+        '</div>';
+      if (i < TOTAL_STEPS) {
+        html += '<div class="wizard-connector ' + (i < currentStep ? 'done' : '') + '"></div>';
+      }
+    }
+    container.innerHTML = html;
+    document.getElementById('onboard-step-label').textContent = 'Stap ' + currentStep + ' van ' + TOTAL_STEPS;
+  }
+
+  function showStep(n) {
+    document.querySelectorAll('.step-pane').forEach(function(p) { p.classList.remove('active'); });
+    var el = document.getElementById('step-' + n);
+    if (el) el.classList.add('active');
+    window.scrollTo(0, 0);
+  }
+
+  function goToStep(n) {
+    currentStep = n;
+    renderProgress();
+    showStep(n);
+    saveProgress();
+  }
+
+  function prevStep() { if (currentStep > 1) goToStep(currentStep - 1); }
+
+  function saveProgress() {
+    localStorage.setItem('warmr_onboard_' + userId, JSON.stringify({
+      step: currentStep,
+      networkAccounts: networkAccounts,
+      domainId: savedDomainId,
+    }));
+  }
+
+  function markOnboarded() {
+    localStorage.setItem('warmr_onboarded_' + userId, '1');
+    localStorage.removeItem('warmr_onboard_' + userId);
+  }
+
+  // ── Step 1: Domain ────────────────────────────────────────────────────────
+  function dnsRecords(domain) {
+    var d = domain || 'jouwdomein.nl';
+    return [
+      { type: 'TXT', host: d, value: 'v=spf1 include:_spf.google.com ~all', label: 'SPF' },
+      { type: 'TXT', host: 'google._domainkey.' + d, value: 'v=DKIM1; k=rsa; p=<jouw-DKIM-publieke-sleutel>', label: 'DKIM' },
+      { type: 'TXT', host: '_dmarc.' + d, value: 'v=DMARC1; p=none; rua=mailto:dmarc@' + d, label: 'DMARC' },
+      { type: 'MX',  host: d, value: 'ASPMX.L.GOOGLE.COM (prioriteit 1)', label: 'MX' },
+    ];
+  }
+
+  function updateDnsTable() {
+    var domain = document.getElementById('domain-input').value.trim() || 'jouwdomein.nl';
+    var tbody = document.getElementById('dns-tbody');
+    tbody.innerHTML = dnsRecords(domain).map(function(r) {
+      return '<tr>' +
+        '<td><span class="badge badge-muted">' + r.type + '</span></td>' +
+        '<td style="font-family:monospace;font-size:.8rem;max-width:180px;overflow:hidden;text-overflow:ellipsis" title="' + r.host + '">' + r.host + '</td>' +
+        '<td style="font-family:monospace;font-size:.78rem;max-width:260px;overflow:hidden;text-overflow:ellipsis;color:var(--primary)" title="' + r.value + '">' + r.value + '</td>' +
+        '<td><button class="btn btn-ghost btn-sm" style="white-space:nowrap" onclick="copyToClipboard(\'' + r.value.replace(/'/g, "\\'") + '\',\'' + r.label + ' record\')">Kopieer</button></td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  async function saveDomain() {
+    var domain = document.getElementById('domain-input').value.trim();
+    var registrar = document.getElementById('registrar-input').value;
+    if (!domain) { toast('Vul een domeinnaam in.', 'warning'); return; }
+
+    try {
+      var result = await api('/domains', { method: 'POST', body: JSON.stringify({ domain: domain, registrar: registrar }) });
+      savedDomainId = result.id;
+      toast('Domein opgeslagen!', 'success');
+      goToStep(2);
+    } catch (e) {
+      if (e.message.includes('already')) {
+        savedDomainId = 'existing';
+        toast('Domein bestaat al — verder gaan.', 'info');
+        goToStep(2);
+      } else {
+        toast(e.message, 'error');
+      }
+    }
+  }
+
+  // ── Step 2: Inbox ─────────────────────────────────────────────────────────
+  function selectProvider(el) {
+    document.querySelectorAll('.provider-btn').forEach(function(b) { b.classList.remove('selected'); });
+    el.classList.add('selected');
+    selectedProvider = el.dataset.provider;
+    var hints = {
+      google: 'Google: Google Account \u2192 Beveiliging \u2192 2-stapsverificatie \u2192 App-wachtwoorden.',
+      microsoft: 'Microsoft: Ga naar account.microsoft.com \u2192 Beveiliging \u2192 App-wachtwoorden.',
+      other: 'Gebruik het SMTP-wachtwoord van je e-mailprovider.',
+    };
+    document.getElementById('app-pw-hint').textContent = hints[selectedProvider];
+  }
+
+  async function saveInbox() {
+    var email = document.getElementById('inbox-email').value.trim();
+    var password = document.getElementById('inbox-pw').value;
+    if (!email || !password) { toast('Vul e-mailadres en app-wachtwoord in.', 'warning'); return; }
+
+    var domain = email.split('@')[1];
+    try {
+      await api('/inboxes', { method: 'POST', body: JSON.stringify({ email: email, domain: domain, provider: selectedProvider }) });
+      toast('Inbox ' + email + ' geregistreerd!', 'success');
+      setTimeout(function() { toast('Vergeet niet INBOX_N_EMAIL en INBOX_N_PASSWORD aan .env toe te voegen.', 'warning', 6000); }, 1000);
+      goToStep(3);
+    } catch (e) {
+      if (e.message.includes('already')) {
+        toast('Inbox bestaat al — verder gaan.', 'info');
+        goToStep(3);
+      } else {
+        toast(e.message, 'error');
+      }
+    }
+  }
+
+  // ── Step 3: Network ───────────────────────────────────────────────────────
+  function addNetworkAccount() {
+    var email = document.getElementById('net-email').value.trim();
+    var pw = document.getElementById('net-pw').value;
+    if (!email || !pw) { toast('Vul e-mail en wachtwoord in.', 'warning'); return; }
+    if (networkAccounts.find(function(a) { return a.email === email; })) { toast('Account al toegevoegd.', 'warning'); return; }
+
+    networkAccounts.push({ email: email, password: pw });
+    document.getElementById('net-email').value = '';
+    document.getElementById('net-pw').value = '';
+    renderNetwork();
+    saveProgress();
+    toast(email + ' toegevoegd aan netwerk', 'success', 2000);
+  }
+
+  function removeNetworkAccount(email) {
+    networkAccounts = networkAccounts.filter(function(a) { return a.email !== email; });
+    renderNetwork();
+    saveProgress();
+  }
+
+  function renderNetwork() {
+    var list = document.getElementById('network-list');
+    list.innerHTML = networkAccounts.map(function(a) {
+      return '<div class="network-account">' +
+        '<div class="avatar avatar-sm">' + a.email.slice(0,2).toUpperCase() + '</div>' +
+        '<span class="text-sm">' + a.email + '</span>' +
+        '<span class="remove-btn" onclick="removeNetworkAccount(\'' + a.email + '\')">' +
+          '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
+        '</span>' +
+        '</div>';
+    }).join('');
+    document.getElementById('network-count').textContent =
+      networkAccounts.length + ' account' + (networkAccounts.length !== 1 ? 's' : '') + ' toegevoegd';
+  }
+
+  function saveNetwork() {
+    if (networkAccounts.length === 0) { toast('Voeg minimaal 1 account toe.', 'warning'); return; }
+
+    var envLines = networkAccounts.map(function(a, i) {
+      return 'WARMUP_NETWORK_' + (i+1) + '_EMAIL=' + a.email + '\nWARMUP_NETWORK_' + (i+1) + '_PASSWORD=' + a.password;
+    }).join('\n');
+
+    copyToClipboard(envLines, 'Netwerk .env configuratie');
+    setTimeout(function() { toast('Plak de gekopieerde regels in je .env bestand.', 'info', 6000); }, 500);
+    goToStep(4);
+  }
+
+  function skipStep3() { goToStep(4); }
+</script>
+</body>
+</html>

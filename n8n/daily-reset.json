@@ -1,0 +1,137 @@
+{
+  "name": "Warmr — Daily Reset",
+  "nodes": [
+    {
+      "id": "b8c9d0e1-0008-0008-0008-000000000001",
+      "name": "Schedule: Midnight every day",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 0 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "b8c9d0e1-0008-0008-0008-000000000002",
+      "name": "POST /inboxes/reset-daily-counts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WARMR_API_BASE }}/inboxes/reset-daily-counts",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.WARMR_API_TOKEN }}" }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "id": "b8c9d0e1-0008-0008-0008-000000000003",
+      "name": "Success?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 300],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "cond-1",
+              "leftValue": "={{ $json.reset }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "b8c9d0e1-0008-0008-0008-000000000004",
+      "name": "Log reset result",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [960, 200],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "r1",
+              "name": "reset_at",
+              "value": "={{ new Date().toISOString() }}",
+              "type": "string"
+            },
+            {
+              "id": "r2",
+              "name": "inboxes_reset",
+              "value": "={{ $json.inboxes_updated }}",
+              "type": "number"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "b8c9d0e1-0008-0008-0008-000000000005",
+      "name": "Log reset error",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 420],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/warmup_logs",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ action: 'error', notes: 'n8n daily-reset failed: ' + ($json.error || JSON.stringify($json)), timestamp: new Date().toISOString() }) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Schedule: Midnight every day": {
+      "main": [
+        [{ "node": "POST /inboxes/reset-daily-counts", "type": "main", "index": 0 }]
+      ]
+    },
+    "POST /inboxes/reset-daily-counts": {
+      "main": [
+        [{ "node": "Success?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Success?": {
+      "main": [
+        [{ "node": "Log reset result", "type": "main", "index": 0 }],
+        [{ "node": "Log reset error", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true },
+  "meta": { "templateCredsSetupCompleted": true, "instanceId": "warmr" },
+  "notes": "Resets daily_sent = 0 for all inboxes at midnight every day.\nThis is required for the warmup engine and campaign scheduler to correctly\ntrack the daily send limit per inbox."
+}

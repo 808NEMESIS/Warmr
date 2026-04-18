@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Warmr — Leads</title>
+  <link rel="icon" type="image/png" href="logo-warmr.png">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <style>
+    .lead-table { width: 100%; border-collapse: collapse; }
+    .lead-table th { text-align: left; font-size: .7rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; padding: .75rem 1rem; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); }
+    .lead-table td { padding: .75rem 1rem; border-bottom: 1px solid var(--border); font-size: .8125rem; }
+    .lead-table tr { cursor: pointer; transition: background .15s; }
+    .lead-table tr:hover { background: #faf8ff; }
+    .engagement-dots { display: flex; gap: .25rem; align-items: center; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .dot-sent { background: var(--muted); }
+    .dot-opened { background: var(--info); }
+    .dot-clicked { background: var(--primary); }
+    .dot-replied { background: var(--success); }
+    .dot-bounced { background: var(--danger); }
+    .status-pill { display: inline-block; font-size: .7rem; font-weight: 600; padding: .15rem .5rem; border-radius: 99px; text-transform: lowercase; }
+    .s-new { background: #e0e7ff; color: #3730a3; }
+    .s-active { background: #dbeafe; color: #1e40af; }
+    .s-contacted { background: #fef3c7; color: #92400e; }
+    .s-replied { background: #d1fae5; color: #065f46; }
+    .s-interested { background: #bbf7d0; color: #166534; }
+    .s-bounced { background: #fee2e2; color: #991b1b; }
+    .s-unsubscribed { background: #f3f4f6; color: #6b7280; }
+
+    .lead-drawer { position: fixed; top: 0; right: -600px; width: 600px; height: 100vh; background: var(--surface); box-shadow: var(--shadow-lg); z-index: 500; transition: right .25s; display: flex; flex-direction: column; overflow-y: auto; }
+    .lead-drawer.open { right: 0; }
+    .drawer-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.3); z-index: 400; display: none; }
+    .drawer-overlay.open { display: block; }
+
+    .enrichment-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem .75rem; }
+    .enrichment-item { padding: .5rem 0; }
+    .enrichment-label { font-size: .65rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+    .enrichment-value { font-size: .8125rem; color: var(--text); margin-top: .15rem; }
+
+    .timeline-item { display: flex; gap: .75rem; padding: .625rem 0; border-bottom: 1px solid var(--border); }
+    .timeline-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex-shrink: 0; }
+    .timeline-text { font-size: .8125rem; }
+    .timeline-time { font-size: .7rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-mark">W</div>
+    <span class="logo-text">Warmr</span>
+  </div>
+  <div style="padding:.75rem 0;flex:1">
+    <div class="sidebar-section-label">Overzicht</div>
+    <a class="nav-link" href="dashboard.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+      Dashboard
+    </a>
+    <div class="sidebar-section-label">Campagnes</div>
+    <a class="nav-link" href="campaigns.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 9.8 19.79 19.79 0 0112 4.18a2 2 0 012 2V8l2 1.5"/></svg>
+      Campagnes
+    </a>
+    <a class="nav-link active" href="leads.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+      Leads
+    </a>
+    <a class="nav-link" href="unified-inbox.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+      Unified Inbox
+    </a>
+    <div class="sidebar-section-label">Infrastructuur</div>
+    <a class="nav-link" href="inboxes.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+      Inboxes
+    </a>
+    <a class="nav-link" href="domains.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/></svg>
+      Domeinen
+    </a>
+    <div class="sidebar-section-label">Account</div>
+    <a class="nav-link" href="settings.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/></svg>
+      Instellingen
+    </a>
+  </div>
+  <div class="sidebar-footer">
+    <div style="display:flex;align-items:center;gap:.75rem">
+      <div class="avatar avatar-sm" id="sidebar-avatar">?</div>
+      <div style="flex:1;min-width:0">
+        <div class="text-sm font-semi truncate" id="sidebar-name">Laden…</div>
+        <div class="text-xs text-muted">Pro plan</div>
+      </div>
+      <button class="btn-icon" onclick="logout()" title="Uitloggen">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      </button>
+    </div>
+  </div>
+</aside>
+
+<header class="topbar">
+  <div class="topbar-left">
+    <h1 style="font-size:1.25rem;font-family:var(--font-disp);font-weight:400">Leads</h1>
+  </div>
+  <div class="topbar-right">
+    <button class="btn btn-ghost btn-sm" onclick="exportLeads()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Exporteer
+    </button>
+    <div id="topbar-client" style="display:flex;align-items:center;gap:.625rem;cursor:pointer" onclick="window.location.href='settings.html'">
+      <div class="avatar avatar-sm">?</div>
+      <span class="text-sm font-semi client-name" style="max-width:120px">—</span>
+    </div>
+  </div>
+</header>
+
+<div class="main-layout">
+  <div class="main-content">
+    <div class="page">
+
+      <div class="stats-grid" style="grid-template-columns:repeat(5,1fr)">
+        <div class="stat-card"><div class="stat-label">Totaal leads</div><div class="stat-value" id="s-total">—</div></div>
+        <div class="stat-card"><div class="stat-label">Actief in sequence</div><div class="stat-value" id="s-active">—</div></div>
+        <div class="stat-card stat-card-accent"><div class="stat-label">Replied</div><div class="stat-value" id="s-replied">—</div></div>
+        <div class="stat-card"><div class="stat-label">Bounced</div><div class="stat-value" id="s-bounced">—</div></div>
+        <div class="stat-card"><div class="stat-label">Unsubscribed</div><div class="stat-value" id="s-unsub">—</div></div>
+      </div>
+
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem;gap:.75rem;flex-wrap:wrap">
+        <div class="filter-chips">
+          <div class="filter-chip active" onclick="setFilter('all',this)">Alle</div>
+          <div class="filter-chip" onclick="setFilter('new',this)">Nieuw</div>
+          <div class="filter-chip" onclick="setFilter('active',this)">Actief</div>
+          <div class="filter-chip" onclick="setFilter('contacted',this)">Gecontacteerd</div>
+          <div class="filter-chip" onclick="setFilter('replied',this)">Replied</div>
+          <div class="filter-chip" onclick="setFilter('interested',this)">Geïnteresseerd</div>
+          <div class="filter-chip" onclick="setFilter('bounced',this)">Bounced</div>
+        </div>
+        <input type="search" class="form-input" id="search" placeholder="Zoek op naam, email of bedrijf…" style="width:280px;font-size:.8125rem;padding:.4rem .75rem" oninput="render()">
+      </div>
+
+      <div class="card" style="padding:0;overflow:hidden">
+        <table class="lead-table">
+          <thead>
+            <tr>
+              <th>Lead</th>
+              <th>Bedrijf</th>
+              <th>Status</th>
+              <th>Engagement</th>
+              <th>Campagne</th>
+              <th>Laatst actief</th>
+            </tr>
+          </thead>
+          <tbody id="lead-tbody">
+            <tr><td colspan="6" style="text-align:center;color:var(--muted);padding:2rem">Laden…</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- Drawer -->
+<div class="drawer-overlay" id="drawer-overlay" onclick="closeDrawer()"></div>
+<div class="lead-drawer" id="lead-drawer">
+  <div id="drawer-content" style="padding:1.5rem"></div>
+</div>
+
+<div id="toast-container"></div>
+<script src="config.js"></script>
+<script src="app.js"></script>
+<script>
+var _leads = [];
+var _filter = 'all';
+
+(async function() {
+  try {
+    await requireAuth();
+    populateTopbar();
+    await loadLeads();
+  } catch (e) { console.error(e); }
+})();
+
+async function loadLeads() {
+  try {
+    _leads = await api('/leads?limit=500') || [];
+    updateStats();
+    render();
+  } catch (e) { toast('Kon leads niet laden: ' + e.message, 'error'); }
+}
+
+function updateStats() {
+  document.getElementById('s-total').textContent = _leads.length;
+  document.getElementById('s-active').textContent = _leads.filter(function(l) { return l.status === 'active'; }).length;
+  document.getElementById('s-replied').textContent = _leads.filter(function(l) { return l.status === 'replied'; }).length;
+  document.getElementById('s-bounced').textContent = _leads.filter(function(l) { return l.status === 'bounced'; }).length;
+  document.getElementById('s-unsub').textContent = _leads.filter(function(l) { return l.status === 'unsubscribed'; }).length;
+}
+
+function setFilter(f, el) {
+  _filter = f;
+  document.querySelectorAll('.filter-chip').forEach(function(c) { c.classList.remove('active'); });
+  if (el) el.classList.add('active');
+  render();
+}
+
+function render() {
+  var search = (document.getElementById('search').value || '').toLowerCase();
+  var filtered = _leads.filter(function(l) {
+    if (_filter !== 'all' && l.status !== _filter) return false;
+    if (search) {
+      var hay = ((l.email||'') + (l.first_name||'') + (l.last_name||'') + (l.company||'')).toLowerCase();
+      if (!hay.includes(search)) return false;
+    }
+    return true;
+  });
+
+  var tbody = document.getElementById('lead-tbody');
+  if (!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:2rem">Geen leads gevonden</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = filtered.map(function(l) {
+    var name = [l.first_name, l.last_name].filter(Boolean).join(' ') || l.email;
+    var initials = (l.email || '??').slice(0,2).toUpperCase();
+    var statusClass = 's-' + (l.status || 'new');
+    var cf = l.custom_fields || {};
+
+    // Engagement dots from custom_fields (Heatr enrichment data)
+    var dots = '';
+    if (cf.heatr_score) dots += '<span class="dot dot-sent" title="Heatr score: ' + cf.heatr_score + '"></span>';
+
+    return '<tr onclick="openDrawer(\'' + l.id + '\')">' +
+      '<td>' +
+        '<div style="display:flex;align-items:center;gap:.625rem">' +
+          '<div class="avatar avatar-sm" style="font-size:.65rem">' + initials + '</div>' +
+          '<div>' +
+            '<div style="font-weight:600;font-size:.8125rem">' + name + '</div>' +
+            '<div style="font-size:.75rem;color:var(--muted)">' + (l.email || '') + '</div>' +
+          '</div>' +
+        '</div>' +
+      '</td>' +
+      '<td style="color:var(--muted)">' + (l.company || cf.company || '—') + '</td>' +
+      '<td><span class="status-pill ' + statusClass + '">' + (l.status || 'new') + '</span></td>' +
+      '<td><div class="engagement-dots">' + dots + '</div></td>' +
+      '<td style="color:var(--muted);font-size:.78rem">' + (cf.campaign_name || '—') + '</td>' +
+      '<td style="color:var(--muted);font-size:.78rem">' + timeAgo(l.created_at) + '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+function openDrawer(leadId) {
+  var l = _leads.find(function(x) { return x.id === leadId; });
+  if (!l) return;
+  var cf = l.custom_fields || {};
+  var name = [l.first_name, l.last_name].filter(Boolean).join(' ') || l.email;
+
+  document.getElementById('drawer-content').innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1.5rem">' +
+      '<div>' +
+        '<h3 style="font-family:var(--font-disp);font-size:1.25rem;margin-bottom:.25rem">' + name + '</h3>' +
+        '<div class="text-sm text-muted">' + (l.email || '') + '</div>' +
+      '</div>' +
+      '<button class="btn-icon" onclick="closeDrawer()">' +
+        '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
+      '</button>' +
+    '</div>' +
+
+    '<div style="margin-bottom:1.5rem">' +
+      '<div style="font-size:.7rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:.75rem">Lead info</div>' +
+      '<div class="enrichment-grid">' +
+        enrichItem('Bedrijf', l.company || cf.company) +
+        enrichItem('Functie', l.job_title || cf.contact_title) +
+        enrichItem('Domein', l.domain) +
+        enrichItem('Telefoon', l.phone) +
+        enrichItem('Land', l.country) +
+        enrichItem('Status', l.status) +
+        enrichItem('Geverifieerd', l.verified === true ? 'Ja' : l.verified === false ? 'Nee' : '—') +
+        enrichItem('Aangemaakt', formatDate(l.created_at)) +
+      '</div>' +
+    '</div>' +
+
+    (Object.keys(cf).length > 0 ? (
+      '<div style="margin-bottom:1.5rem">' +
+        '<div style="font-size:.7rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:.75rem">Heatr enrichment</div>' +
+        '<div class="enrichment-grid">' +
+          (cf.heatr_score ? enrichItem('Heatr score', cf.heatr_score) : '') +
+          (cf.icp_match ? enrichItem('ICP match', (parseFloat(cf.icp_match) * 100).toFixed(0) + '%') : '') +
+          (cf.industry ? enrichItem('Sector', cf.industry) : '') +
+          (cf.company_size ? enrichItem('Bedrijfsgrootte', cf.company_size) : '') +
+          (cf.city ? enrichItem('Stad', cf.city) : '') +
+          (cf.website_score ? enrichItem('Website score', cf.website_score) : '') +
+          (cf.opener ? '<div class="enrichment-item" style="grid-column:1/-1"><div class="enrichment-label">Personalized opener</div><div class="enrichment-value" style="font-style:italic">' + cf.opener + '</div></div>' : '') +
+          (cf.positioning ? '<div class="enrichment-item" style="grid-column:1/-1"><div class="enrichment-label">Positionering</div><div class="enrichment-value">' + cf.positioning + '</div></div>' : '') +
+        '</div>' +
+      '</div>'
+    ) : '') +
+
+    '<div style="margin-bottom:1.5rem">' +
+      '<div style="font-size:.7rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:.75rem">Acties</div>' +
+      '<div style="display:flex;gap:.5rem;flex-wrap:wrap">' +
+        '<button class="btn btn-ghost btn-sm" onclick="exportLead(\'' + l.id + '\')">GDPR export</button>' +
+        '<button class="btn btn-danger btn-sm" onclick="purgeLead(\'' + l.id + '\')">Verwijder (GDPR)</button>' +
+      '</div>' +
+    '</div>';
+
+  document.getElementById('lead-drawer').classList.add('open');
+  document.getElementById('drawer-overlay').classList.add('open');
+}
+
+function enrichItem(label, value) {
+  return '<div class="enrichment-item"><div class="enrichment-label">' + label + '</div><div class="enrichment-value">' + (value || '—') + '</div></div>';
+}
+
+function closeDrawer() {
+  document.getElementById('lead-drawer').classList.remove('open');
+  document.getElementById('drawer-overlay').classList.remove('open');
+}
+
+async function exportLead(id) {
+  try {
+    var data = await api('/leads/' + id + '/export-gdpr');
+    copyToClipboard(JSON.stringify(data, null, 2), 'GDPR export');
+    toast('Data gekopieerd naar klembord', 'success');
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function purgeLead(id) {
+  if (!confirm('ALLE data van deze lead permanent verwijderen? Dit kan niet ongedaan worden.')) return;
+  try {
+    await api('/leads/' + id + '/purge', { method: 'DELETE' });
+    toast('Lead verwijderd (GDPR)', 'success');
+    closeDrawer();
+    loadLeads();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+function exportLeads() {
+  var csv = 'email,first_name,last_name,company,status,created_at\n' +
+    _leads.map(function(l) {
+      return [l.email, l.first_name, l.last_name, l.company, l.status, l.created_at].map(function(v) { return '"' + (v||'').toString().replace(/"/g,'""') + '"'; }).join(',');
+    }).join('\n');
+  var blob = new Blob([csv], { type: 'text/csv' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url; a.download = 'warmr-leads.csv'; a.click();
+  toast('CSV gedownload', 'success');
+}
+
+async function populateTopbar() {
+  var u = await _supabase.auth.getUser();
+  var user = u.data?.user;
+  if (user) {
+    var email = user.email || '';
+    var initials = email.slice(0,2).toUpperCase();
+    document.querySelectorAll('.avatar-sm').forEach(function(a) { a.textContent = initials; });
+    document.querySelectorAll('.client-name').forEach(function(n) { n.textContent = email.split('@')[0]; });
+    document.getElementById('sidebar-name').textContent = email.split('@')[0];
+  }
+}
+</script>
+</body>
+</html>

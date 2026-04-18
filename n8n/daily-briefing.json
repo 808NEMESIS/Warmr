@@ -1,0 +1,137 @@
+{
+  "name": "Warmr — Daily Briefing",
+  "nodes": [
+    {
+      "id": "db000001-0001-0001-0001-000000000001",
+      "name": "Schedule: Weekdays 07:45",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "45 7 * * 1-5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "db000001-0001-0001-0001-000000000002",
+      "name": "POST /briefing/generate-and-send",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WARMR_API_BASE }}/briefing/generate-and-send",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.WARMR_ADMIN_TOKEN }}" }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "id": "db000001-0001-0001-0001-000000000003",
+      "name": "Sent successfully?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 300],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "cond-1",
+              "leftValue": "={{ $json.sent }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "db000001-0001-0001-0001-000000000004",
+      "name": "Log success",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [960, 200],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "r1",
+              "name": "briefing_sent_at",
+              "value": "={{ new Date().toISOString() }}",
+              "type": "string"
+            },
+            {
+              "id": "r2",
+              "name": "recipient",
+              "value": "={{ $json.recipient }}",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "db000001-0001-0001-0001-000000000005",
+      "name": "Log send failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 420],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/warmup_logs",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ action: 'error', notes: 'daily-briefing send failed: ' + JSON.stringify($json), timestamp: new Date().toISOString() }) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Schedule: Weekdays 07:45": {
+      "main": [
+        [{ "node": "POST /briefing/generate-and-send", "type": "main", "index": 0 }]
+      ]
+    },
+    "POST /briefing/generate-and-send": {
+      "main": [
+        [{ "node": "Sent successfully?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Sent successfully?": {
+      "main": [
+        [{ "node": "Log success", "type": "main", "index": 0 }],
+        [{ "node": "Log send failure", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true },
+  "meta": { "templateCredsSetupCompleted": true, "instanceId": "warmr" },
+  "notes": "Sends the daily morning briefing email every weekday at 07:45.\nCalls POST /briefing/generate-and-send with the admin JWT token.\nThe endpoint uses WARMR_ADMIN_TOKEN — ensure this is the JWT of the admin user,\nnot the API service token. Set WARMR_ADMIN_TOKEN in n8n environment variables.\nOptionally set BRIEFING_TO_EMAIL in .env to override the recipient."
+}
