@@ -271,6 +271,38 @@ function injectSuppressionLink() {
   unifiedLink.parentNode.insertBefore(supLink, unifiedLink.nextSibling);
 }
 
+// Auto-inject funnel link right after Dashboard
+function injectFunnelLink() {
+  if (document.querySelector('a[href="funnel.html"]')) return;
+  var dashLink = document.querySelector('a[href="dashboard.html"]');
+  if (!dashLink) return;
+  var funnelLink = document.createElement('a');
+  funnelLink.className = 'nav-link';
+  funnelLink.href = 'funnel.html';
+  funnelLink.innerHTML =
+    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">' +
+      '<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>' +
+    '</svg>' +
+    'Funnel';
+  dashLink.parentNode.insertBefore(funnelLink, dashLink.nextSibling);
+}
+
+// Auto-inject campaign performance link after Campagnes
+function injectPerformanceLink() {
+  if (document.querySelector('a[href="campaign-performance.html"]')) return;
+  var campLink = document.querySelector('a[href="campaigns.html"]');
+  if (!campLink) return;
+  var perfLink = document.createElement('a');
+  perfLink.className = 'nav-link';
+  perfLink.href = 'campaign-performance.html';
+  perfLink.innerHTML =
+    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">' +
+      '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>' +
+    '</svg>' +
+    'Performance';
+  campLink.parentNode.insertBefore(perfLink, campLink.nextSibling);
+}
+
 // Inject mobile sidebar toggle
 function initMobileSidebar() {
   if (document.querySelector('.mobile-toggle')) return;
@@ -315,13 +347,339 @@ function injectFavicon() {
   document.head.appendChild(link);
 }
 
+// ── Real-time notification polling ───────────────────────────────────────────
+
+var _notifPollInterval = null;
+var _notifShownIds = new Set();
+var _notifLastPoll = null;
+var _notifPermissionAsked = false;
+
+function _startNotifPolling() {
+  if (_notifPollInterval) return;
+  _notifLastPoll = localStorage.getItem('warmr_notif_last_poll')
+    || new Date(Date.now() - 5 * 60 * 1000).toISOString(); // start 5 min back
+  _pollNotifications();
+  _notifPollInterval = setInterval(function() {
+    if (document.visibilityState === 'visible') {
+      _pollNotifications();
+    }
+  }, 30000);
+}
+
+function _askBrowserNotifPermission() {
+  if (_notifPermissionAsked) return;
+  _notifPermissionAsked = true;
+  if (!('Notification' in window)) return;
+  if (Notification.permission === 'default') {
+    Notification.requestPermission().catch(function() {});
+  }
+}
+
+async function _pollNotifications() {
+  try {
+    var since = encodeURIComponent(_notifLastPoll || new Date(Date.now() - 60000).toISOString());
+    var res = await api('/notifications/poll?since=' + since);
+    if (!res) return;
+
+    // Update sidebar badge for unread replies
+    var replyBadge = document.getElementById('nav-replies');
+    if (replyBadge) setNavBadge('nav-replies', res.unread_reply_count || 0);
+
+    // Process new replies
+    (res.new_replies || []).forEach(function(r) {
+      if (_notifShownIds.has('r:' + r.id)) return;
+      _notifShownIds.add('r:' + r.id);
+
+      var subject = String(r.subject || '(geen onderwerp)').slice(0, 60);
+      var sender = String(r.from_email || 'onbekend');
+      var cls = r.classification || '';
+      var msg = 'Nieuwe reply van ' + sender + (cls === 'interested' ? ' (INTERESSE!)' : '') + ': ' + subject;
+
+      if (typeof toast === 'function') {
+        toast(msg, cls === 'interested' ? 'success' : 'info', 6000);
+      }
+
+      _showBrowserNotification('Nieuwe reply — Warmr', msg);
+    });
+
+    // Process new system notifications
+    (res.new_notifications || []).forEach(function(n) {
+      if (_notifShownIds.has('n:' + n.id)) return;
+      _notifShownIds.add('n:' + n.id);
+
+      var type = n.priority === 'urgent' ? 'error' : n.priority === 'high' ? 'warning' : 'info';
+      if (typeof toast === 'function') {
+        toast(String(n.message || '').slice(0, 200), type, 5000);
+      }
+      if (n.priority === 'urgent' || n.priority === 'high') {
+        _showBrowserNotification('Warmr — ' + (n.type || 'melding'), String(n.message || '').slice(0, 200));
+      }
+    });
+
+    // Persist last poll time
+    if (res.server_time) {
+      _notifLastPoll = res.server_time;
+      localStorage.setItem('warmr_notif_last_poll', res.server_time);
+    }
+  } catch (err) {
+    // Silent fail — log to console, keep polling
+    console.debug('Notification poll failed:', err.message);
+  }
+}
+
+function _showBrowserNotification(title, body) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  if (document.visibilityState === 'visible') return; // don't double-notify when tab active
+  try {
+    var n = new Notification(title, {
+      body: body,
+      icon: '/logo-warmr.png',
+      silent: false,
+    });
+    n.onclick = function() {
+      window.focus();
+      window.location.href = '/unified-inbox.html';
+      n.close();
+    };
+    setTimeout(function() { n.close(); }, 10000);
+  } catch {}
+}
+
+// ── Confirm modal (replaces native confirm()) ───────────────────────────────
+
+function confirmDialog(opts) {
+  return new Promise(function(resolve) {
+    var title = opts.title || 'Bevestig';
+    var body = opts.body || 'Weet je het zeker?';
+    var confirmText = opts.confirmText || 'Ja';
+    var cancelText = opts.cancelText || 'Annuleren';
+    var danger = !!opts.danger;
+
+    var overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:9999;display:flex;align-items:center;justify-content:center';
+
+    var modal = document.createElement('div');
+    modal.style.cssText = 'background:var(--surface);border-radius:12px;padding:1.5rem;max-width:420px;width:calc(100vw - 2rem);box-shadow:0 12px 48px rgba(0,0,0,.3);animation:spin 0s';
+
+    var h = document.createElement('h3');
+    h.style.cssText = 'font-family:var(--font-disp);font-size:1.125rem;margin-bottom:.5rem';
+    h.textContent = title;
+
+    var p = document.createElement('p');
+    p.style.cssText = 'color:var(--muted);font-size:.875rem;line-height:1.5;margin-bottom:1.5rem';
+    p.textContent = body;
+
+    var btns = document.createElement('div');
+    btns.style.cssText = 'display:flex;gap:.5rem;justify-content:flex-end';
+
+    var cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn btn-ghost btn-sm';
+    cancelBtn.textContent = cancelText;
+    cancelBtn.onclick = function() { cleanup(); resolve(false); };
+
+    var okBtn = document.createElement('button');
+    okBtn.className = 'btn btn-sm ' + (danger ? 'btn-danger' : 'btn-primary');
+    okBtn.textContent = confirmText;
+    okBtn.onclick = function() { cleanup(); resolve(true); };
+
+    btns.appendChild(cancelBtn);
+    btns.appendChild(okBtn);
+    modal.appendChild(h);
+    modal.appendChild(p);
+    modal.appendChild(btns);
+    overlay.appendChild(modal);
+
+    function cleanup() {
+      document.removeEventListener('keydown', keyHandler);
+      overlay.remove();
+    }
+    function keyHandler(e) {
+      if (e.key === 'Escape') { cleanup(); resolve(false); }
+      if (e.key === 'Enter')  { cleanup(); resolve(true); }
+    }
+    document.addEventListener('keydown', keyHandler);
+    overlay.onclick = function(e) { if (e.target === overlay) { cleanup(); resolve(false); } };
+
+    document.body.appendChild(overlay);
+    setTimeout(function() { okBtn.focus(); }, 50);
+  });
+}
+
+// ── Undo-toast (toast with "Ongedaan" action) ───────────────────────────────
+
+function toastWithUndo(message, undoLabel, onUndo, ms) {
+  _ensureToastContainer();
+  ms = ms || 5000;
+  var el = document.createElement('div');
+  el.className = 'toast info';
+  el.style.minWidth = '280px';
+  var undoBtn = '<button style="background:transparent;border:none;color:var(--primary);font-weight:700;cursor:pointer;margin-left:.75rem;padding:0">' + (undoLabel || 'Ongedaan') + '</button>';
+  el.innerHTML =
+    '<span style="flex:1">' + message + '</span>' +
+    undoBtn +
+    '<button class="btn-icon" style="margin-left:.25rem" onclick="this.parentElement.remove()">' +
+      '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
+    '</button>';
+  var btn = el.querySelector('button');
+  btn.onclick = function() {
+    try { onUndo && onUndo(); } catch(e) { console.error(e); }
+    el.remove();
+  };
+  _toastContainer.appendChild(el);
+  setTimeout(function() { if (el.parentElement) el.remove(); }, ms);
+}
+
+// ── Dark mode ───────────────────────────────────────────────────────────────
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem('warmr_theme', theme);
+}
+
+function toggleTheme() {
+  var cur = document.documentElement.getAttribute('data-theme') || 'light';
+  applyTheme(cur === 'dark' ? 'light' : 'dark');
+}
+
+function _initTheme() {
+  var saved = localStorage.getItem('warmr_theme') || 'light';
+  applyTheme(saved);
+}
+
+// Inject theme toggle button into sidebar footer
+function injectThemeToggle() {
+  if (document.querySelector('#theme-toggle-btn')) return;
+  var footer = document.querySelector('.sidebar-footer > div');
+  if (!footer) return;
+  var btn = document.createElement('button');
+  btn.id = 'theme-toggle-btn';
+  btn.className = 'btn-icon';
+  btn.title = 'Thema wisselen (t)';
+  btn.onclick = toggleTheme;
+  btn.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
+  var logoutBtn = footer.querySelector('button[title="Uitloggen"]');
+  if (logoutBtn) footer.insertBefore(btn, logoutBtn);
+  else footer.appendChild(btn);
+}
+
+// ── Keyboard shortcuts ──────────────────────────────────────────────────────
+
+var _SHORTCUTS = [
+  { key: '/', desc: 'Focus zoeken',          action: function() {
+      var inp = document.querySelector('input[type="search"], #search');
+      if (inp) { inp.focus(); inp.select(); return true; }
+      return false;
+  }},
+  { key: 'Escape', desc: 'Sluit drawer / modal', action: function() {
+      var openDrawer = document.querySelector('.drawer.open, .lead-drawer.open, .modal-overlay[style*="flex"]');
+      if (openDrawer) {
+        if (typeof closeDrawer === 'function') { try { closeDrawer(); } catch{} }
+        document.querySelectorAll('.modal-overlay').forEach(function(m) { if (m.style.display === 'flex') m.style.display = 'none'; });
+        document.querySelectorAll('.drawer, .lead-drawer').forEach(function(d) { d.classList.remove('open'); });
+        document.querySelectorAll('.drawer-overlay').forEach(function(o) { o.classList.remove('open'); });
+        return true;
+      }
+      return false;
+  }},
+  { key: 'g d', desc: 'Ga naar Dashboard',  action: function() { window.location.href = 'dashboard.html'; return true; }},
+  { key: 'g f', desc: 'Ga naar Funnel',     action: function() { window.location.href = 'funnel.html'; return true; }},
+  { key: 'g c', desc: 'Ga naar Campagnes',  action: function() { window.location.href = 'campaigns.html'; return true; }},
+  { key: 'g l', desc: 'Ga naar Leads',      action: function() { window.location.href = 'leads.html'; return true; }},
+  { key: 'g i', desc: 'Ga naar Inboxes',    action: function() { window.location.href = 'inboxes.html'; return true; }},
+  { key: 'g u', desc: 'Ga naar Inbox',      action: function() { window.location.href = 'unified-inbox.html'; return true; }},
+  { key: 'n',   desc: 'Nieuw (context)',    action: function() {
+      var page = (location.pathname || '').toLowerCase();
+      if (page.includes('inboxes')) { window.location.hash = '#new'; return true; }
+      if (page.includes('campaigns')) { window.location.hash = '#new'; return true; }
+      if (page.includes('leads')) { window.location.href = 'campaigns.html#new'; return true; }
+      return false;
+  }},
+  { key: 't',   desc: 'Thema wisselen',     action: function() { toggleTheme(); return true; }},
+  { key: '?',   desc: 'Help (shortcuts)',   action: function() { showShortcutHelp(); return true; }},
+];
+
+var _keyBuffer = '';
+var _keyBufferTimer = null;
+
+function _handleKey(e) {
+  // Don't trigger when typing in inputs/textareas/contenteditable
+  var t = e.target;
+  var tag = (t && t.tagName || '').toLowerCase();
+  var typing = tag === 'input' || tag === 'textarea' || (t && t.isContentEditable);
+  if (typing && e.key !== 'Escape' && e.key !== '/') return;
+
+  // Modifiers — don't interfere with Cmd+S, Ctrl+C, etc.
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+  // Handle Escape and '/' directly
+  if (e.key === 'Escape' || e.key === '/') {
+    for (var i = 0; i < _SHORTCUTS.length; i++) {
+      if (_SHORTCUTS[i].key === e.key) {
+        if (_SHORTCUTS[i].action()) { e.preventDefault(); _keyBuffer = ''; return; }
+      }
+    }
+  }
+
+  var k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  if (k.length !== 1) { _keyBuffer = ''; return; }
+
+  _keyBuffer = (_keyBuffer + ' ' + k).trim();
+  if (_keyBuffer.length > 5) _keyBuffer = _keyBuffer.slice(-5);
+  clearTimeout(_keyBufferTimer);
+  _keyBufferTimer = setTimeout(function() { _keyBuffer = ''; }, 1000);
+
+  for (var j = 0; j < _SHORTCUTS.length; j++) {
+    var s = _SHORTCUTS[j];
+    if (s.key === _keyBuffer || s.key === k) {
+      if (s.action()) {
+        e.preventDefault();
+        _keyBuffer = '';
+        return;
+      }
+    }
+  }
+}
+
+function showShortcutHelp() {
+  var existing = document.getElementById('shortcut-help-modal');
+  if (existing) { existing.remove(); return; }
+  var overlay = document.createElement('div');
+  overlay.id = 'shortcut-help-modal';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+  overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
+  var rows = _SHORTCUTS.map(function(s) {
+    return '<tr><td style="padding:.4rem .5rem"><kbd style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:.1rem .4rem;font-family:monospace;font-size:.75rem">' + s.key + '</kbd></td><td style="padding:.4rem .5rem;font-size:.8125rem">' + s.desc + '</td></tr>';
+  }).join('');
+  overlay.innerHTML =
+    '<div style="background:var(--surface);border-radius:12px;padding:1.5rem;max-width:440px;width:calc(100vw - 2rem)">' +
+      '<h3 style="font-family:var(--font-disp);font-size:1.125rem;margin-bottom:.875rem">Keyboard shortcuts</h3>' +
+      '<table style="width:100%"><tbody>' + rows + '</tbody></table>' +
+      '<div style="margin-top:1rem;text-align:right"><button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'shortcut-help-modal\').remove()">Sluiten</button></div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+
 // Auto-init sidebar/logo/switcher when DOM is ready
 document.addEventListener('DOMContentLoaded', function() {
+  _initTheme();
   injectFavicon();
   replaceSidebarLogo();
   initProductSwitcher();
+  injectFunnelLink();
+  injectPerformanceLink();
   injectSuppressionLink();
+  injectThemeToggle();
   initMobileSidebar();
+  document.addEventListener('keydown', _handleKey);
+  // Start polling after auth is confirmed (delayed to not race with login flow)
+  setTimeout(function() {
+    getSession().then(function(s) {
+      if (s) {
+        _askBrowserNotifPermission();
+        _startNotifPolling();
+      }
+    }).catch(function() {});
+  }, 2000);
 });
 
 // ── Navigation badge setter ───────────────────────────────────────────────────

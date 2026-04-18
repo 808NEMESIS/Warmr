@@ -114,6 +114,20 @@ limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Attach security headers to every response."""
 
+    # CSP for HTML pages — allow Supabase CDN for the JS SDK, inline for legacy onclick handlers,
+    # data: URLs for tracking pixels, and same-origin for everything else.
+    _CSP_HTML = (
+        "default-src 'self'; "
+        "script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data: blob: https:; "
+        "connect-src 'self' https://*.supabase.co https://api.anthropic.com; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'"
+    )
+
     async def dispatch(self, request: StarletteRequest, call_next):
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -122,6 +136,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+        response.headers["Cross-Origin-Resource-Policy"] = "same-site"
+        # Apply CSP only to HTML responses (not JSON APIs which don't execute scripts)
+        ct = response.headers.get("content-type", "")
+        if "text/html" in ct:
+            response.headers["Content-Security-Policy"] = self._CSP_HTML
         return response
 
 # ---------------------------------------------------------------------------
@@ -252,8 +272,72 @@ def _days_ago_utc(days: int) -> str:
 # POST /auth/verify
 # ---------------------------------------------------------------------------
 
+@app.post("/auth/login-attempt", tags=["Auth"])
+@limiter.limit("10/minute")
+async def log_login_attempt(request: Request, body: dict) -> dict:
+    """
+    Log a login attempt from the frontend.
+
+    Frontend calls this before + after Supabase Auth call so we can track
+    failed attempts per email and per IP, and optionally block after threshold.
+    """
+    email = (body.get("email") or "").strip().lower()[:255]
+    success = bool(body.get("success", False))
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent", "")[:500]
+
+    # Check failed-attempt count before allowing another try
+    from datetime import timedelta
+    since = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat()
+    try:
+        recent = (
+            _supabase.table("login_attempts")
+            .select("id", count="exact")
+            .eq("email", email)
+            .eq("success", False)
+            .gte("created_at", since)
+            .execute()
+        )
+        fail_count = recent.count or 0
+    except Exception:
+        fail_count = 0
+
+    blocked = fail_count >= 5 and not success
+
+    # Log the attempt
+    try:
+        _supabase.table("login_attempts").insert({
+            "email": email,
+            "ip_address": ip,
+            "success": success,
+            "user_agent": ua,
+        }).execute()
+    except Exception as exc:
+        logger.debug("Failed to log login attempt: %s", exc)
+
+    # Optional urgent notification to admins after 10+ failures
+    if fail_count >= 10 and not success:
+        try:
+            _supabase.table("notifications").insert({
+                "client_id": "system",
+                "type": "brute_force_alert",
+                "message": f"Brute force suspected on {email} — {fail_count} failed attempts from {ip or 'unknown IP'}.",
+                "priority": "urgent",
+            }).execute()
+        except Exception:
+            pass
+
+    return {
+        "logged": True,
+        "recent_fails": fail_count,
+        "blocked": blocked,
+        "retry_after_minutes": 15 if blocked else None,
+    }
+
+
 @app.post("/auth/verify", response_model=TokenVerifyResponse, tags=["Auth"])
-async def verify_token(credentials: Annotated[HTTPAuthorizationCredentials, Depends(HTTPBearer())]):
+@limiter.limit("10/minute")
+async def verify_token(request: Request, credentials: Annotated[HTTPAuthorizationCredentials, Depends(HTTPBearer())]):
     """
     Validate a Supabase JWT token without requiring an existing session.
 
@@ -1786,6 +1870,128 @@ async def update_campaign_status(campaign_id: str, body: dict, client_id: Client
     return result
 
 
+@app.get("/campaigns/performance", tags=["Campaigns"])
+async def campaigns_performance(
+    client_id: ClientId,
+    days: int = Query(default=30, ge=1, le=365),
+) -> dict:
+    """
+    Aggregated performance metrics for all campaigns + daily trend lines.
+
+    Returns per campaign: sent, opened, clicked, replied, bounced, unsubscribed,
+    plus rates. Also includes an overall daily trend time series.
+    """
+    cutoff = _days_ago_utc(days)
+    campaigns_resp = (
+        _supabase.table("campaigns")
+        .select("id, name, status, created_at, daily_limit")
+        .eq("client_id", client_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    campaigns = campaigns_resp.data or []
+
+    per_campaign: list[dict] = []
+    for c in campaigns:
+        cid = c["id"]
+        events_resp = (
+            _supabase.table("email_events")
+            .select("event_type, lead_id, created_at")
+            .eq("campaign_id", cid)
+            .gte("created_at", cutoff)
+            .execute()
+        )
+        events = events_resp.data or []
+
+        sent = sum(1 for e in events if e.get("event_type") == "sent")
+        opened = len({e["lead_id"] for e in events if e.get("event_type") == "opened" and e.get("lead_id")})
+        clicked = len({e["lead_id"] for e in events if e.get("event_type") == "clicked" and e.get("lead_id")})
+        replied = len({e["lead_id"] for e in events if e.get("event_type") == "replied" and e.get("lead_id")})
+        bounced = sum(1 for e in events if e.get("event_type") == "bounced")
+        unsub = sum(1 for e in events if e.get("event_type") == "unsubscribed")
+
+        def _rate(num, denom):
+            return round(num / denom, 4) if denom else 0.0
+
+        per_campaign.append({
+            "id": cid,
+            "name": c.get("name", ""),
+            "status": c.get("status", ""),
+            "created_at": c.get("created_at"),
+            "sent": sent,
+            "unique_opens": opened,
+            "unique_clicks": clicked,
+            "replies": replied,
+            "bounces": bounced,
+            "unsubscribes": unsub,
+            "open_rate": _rate(opened, sent),
+            "click_rate": _rate(clicked, sent),
+            "reply_rate": _rate(replied, sent),
+            "bounce_rate": _rate(bounced, sent),
+            "unsub_rate": _rate(unsub, sent),
+        })
+
+    # Overall daily trend (all campaigns combined)
+    all_events_resp = (
+        _supabase.table("email_events")
+        .select("event_type, lead_id, created_at")
+        .eq("client_id", client_id)
+        .gte("created_at", cutoff)
+        .limit(20000)
+        .execute()
+    )
+    all_events = all_events_resp.data or []
+    daily: dict[str, dict] = {}
+    for e in all_events:
+        day = (e.get("created_at") or "")[:10]
+        if not day:
+            continue
+        if day not in daily:
+            daily[day] = {"sent": 0, "opened_leads": set(), "replied_leads": set(), "bounced": 0}
+        t = e.get("event_type", "")
+        if t == "sent":
+            daily[day]["sent"] += 1
+        elif t == "opened" and e.get("lead_id"):
+            daily[day]["opened_leads"].add(e["lead_id"])
+        elif t == "replied" and e.get("lead_id"):
+            daily[day]["replied_leads"].add(e["lead_id"])
+        elif t == "bounced":
+            daily[day]["bounced"] += 1
+
+    trend = []
+    for day in sorted(daily.keys()):
+        d = daily[day]
+        trend.append({
+            "date": day,
+            "sent": d["sent"],
+            "opened": len(d["opened_leads"]),
+            "replied": len(d["replied_leads"]),
+            "bounced": d["bounced"],
+        })
+
+    # Overall averages
+    totals = {"sent": 0, "opened": 0, "replied": 0, "bounced": 0, "unsub": 0, "clicked": 0}
+    for c in per_campaign:
+        totals["sent"] += c["sent"]
+        totals["opened"] += c["unique_opens"]
+        totals["clicked"] += c["unique_clicks"]
+        totals["replied"] += c["replies"]
+        totals["bounced"] += c["bounces"]
+        totals["unsub"] += c["unsubscribes"]
+
+    def _r(n, d): return round(n / d, 4) if d else 0.0
+    overall = {
+        **totals,
+        "open_rate": _r(totals["opened"], totals["sent"]),
+        "click_rate": _r(totals["clicked"], totals["sent"]),
+        "reply_rate": _r(totals["replied"], totals["sent"]),
+        "bounce_rate": _r(totals["bounced"], totals["sent"]),
+        "unsub_rate": _r(totals["unsub"], totals["sent"]),
+    }
+
+    return {"campaigns": per_campaign, "daily_trend": trend, "overall": overall, "days": days}
+
+
 @app.get("/campaigns/{campaign_id}/stats", response_model=CampaignStats, tags=["Campaigns"])
 async def campaign_stats(campaign_id: str, client_id: ClientId):
     """
@@ -1993,13 +2199,81 @@ async def list_leads(
     if domain:
         query = query.eq("domain", domain.lower().strip())
 
-    resp = query.order("imported_at", desc=True).range(offset, offset + limit - 1).execute()
+    resp = query.order("created_at", desc=True).range(offset, offset + limit - 1).execute()
     return resp.data or []
 
 
 # ---------------------------------------------------------------------------
 # Notifications
 # ---------------------------------------------------------------------------
+
+@app.get("/notifications/poll", tags=["Notifications"])
+async def poll_notifications(
+    client_id: ClientId,
+    since: Optional[str] = Query(default=None, description="ISO timestamp; returns notifications created after this"),
+) -> dict:
+    """
+    Lightweight polling endpoint for real-time notifications.
+
+    Returns:
+      - new_replies: list of reply events since `since` (unified-inbox format)
+      - new_notifications: list of system notifications since `since`
+      - unread_reply_count: total unread real replies (not warmup)
+    """
+    cutoff = since or _days_ago_utc(1)
+
+    # Unread real replies count
+    try:
+        unread_resp = (
+            _supabase.table("reply_inbox")
+            .select("id", count="exact")
+            .eq("client_id", client_id)
+            .eq("is_read", False)
+            .execute()
+        )
+        unread_count = unread_resp.count or 0
+    except Exception:
+        unread_count = 0
+
+    # New replies since `since`
+    new_replies: list[dict] = []
+    try:
+        replies_resp = (
+            _supabase.table("reply_inbox")
+            .select("id, from_email, subject, classification, received_at")
+            .eq("client_id", client_id)
+            .gt("received_at", cutoff)
+            .order("received_at", desc=True)
+            .limit(20)
+            .execute()
+        )
+        new_replies = replies_resp.data or []
+    except Exception:
+        pass
+
+    # New system notifications since `since`
+    new_notifs: list[dict] = []
+    try:
+        notif_resp = (
+            _supabase.table("notifications")
+            .select("id, type, message, priority, entity_id, entity_type, created_at")
+            .eq("client_id", client_id)
+            .gt("created_at", cutoff)
+            .order("created_at", desc=True)
+            .limit(20)
+            .execute()
+        )
+        new_notifs = notif_resp.data or []
+    except Exception:
+        pass
+
+    return {
+        "unread_reply_count": unread_count,
+        "new_replies": new_replies,
+        "new_notifications": new_notifs,
+        "server_time": _now_utc(),
+    }
+
 
 @app.get("/notifications", response_model=list[NotificationItem], tags=["Notifications"])
 async def get_notifications(client_id: ClientId, days: int = Query(default=1, ge=1, le=30)):
@@ -2931,7 +3205,8 @@ async def placement_history(
 # ---------------------------------------------------------------------------
 
 @app.post("/deliverability/score-content", tags=["Deliverability"])
-async def score_content_endpoint(body: ContentScoreRequest, client_id: ClientId) -> dict:
+@limiter.limit("60/hour")
+async def score_content_endpoint(request: Request, body: ContentScoreRequest, client_id: ClientId) -> dict:
     """
     Run rule-based spam check (instant, no Claude call).
 
@@ -2955,7 +3230,8 @@ async def score_content_endpoint(body: ContentScoreRequest, client_id: ClientId)
 
 
 @app.post("/deliverability/score-content/deep", tags=["Deliverability"])
-async def deep_score_content_endpoint(body: ContentScoreRequest, client_id: ClientId) -> dict:
+@limiter.limit("20/hour")
+async def deep_score_content_endpoint(request: Request, body: ContentScoreRequest, client_id: ClientId) -> dict:
     """
     Run both rule-based + Claude Sonnet deep analysis (may take a few seconds).
 
@@ -3741,7 +4017,7 @@ async def gdpr_export_lead(lead_id: str, client_id: ClientId) -> dict:
         "email_events": (_supabase.table("email_events").select("*").eq("lead_id", lead_id).execute()).data or [],
         "email_tracking": (_supabase.table("email_tracking").select("*").eq("lead_id", lead_id).execute()).data or [],
         "bounces": (_supabase.table("bounce_log").select("*").eq("lead_email", lead.data[0].get("email", "")).execute()).data or [],
-        "exported_at": _NOW_UTC(),
+        "exported_at": _now_utc(),
         "exported_by": client_id,
     }
     return bundle
@@ -3826,7 +4102,8 @@ async def admin_audit_log(
 # ---------------------------------------------------------------------------
 
 @app.post("/ai/subject-optimize", tags=["AI"])
-async def optimize_subject(client_id: ClientId, body: dict) -> dict:
+@limiter.limit("20/hour")
+async def optimize_subject(request: Request, client_id: ClientId, body: dict) -> dict:
     """
     Generate 5 subject line variants with spam scores.
 
@@ -3882,7 +4159,8 @@ No markdown, no preamble, just JSON."""
 # ---------------------------------------------------------------------------
 
 @app.post("/ai/reply-suggest", tags=["AI"])
-async def suggest_replies(client_id: ClientId, body: dict) -> dict:
+@limiter.limit("30/hour")
+async def suggest_replies(request: Request, client_id: ClientId, body: dict) -> dict:
     """
     Generate 3 quick reply suggestions for an incoming email.
 
@@ -4060,7 +4338,7 @@ async def upsert_client_settings(client_id: ClientId, body: dict) -> dict:
     allowed = {"booking_url", "sender_name", "email_signature", "company_name", "reply_to_email", "unsubscribe_text"}
     payload = {k: v for k, v in body.items() if k in allowed}
     payload["client_id"] = client_id
-    payload["updated_at"] = _NOW_UTC()
+    payload["updated_at"] = _now_utc()
 
     # Try update first, fall back to insert
     existing = _supabase.table("client_settings").select("client_id").eq("client_id", client_id).limit(1).execute()
@@ -4132,7 +4410,7 @@ async def update_crm_integration(integration_id: str, client_id: ClientId, body:
     patch = {k: v for k, v in body.items() if k in allowed}
     if not patch:
         raise HTTPException(status_code=422, detail="No valid fields to update.")
-    patch["updated_at"] = _NOW_UTC()
+    patch["updated_at"] = _now_utc()
 
     resp = _supabase.table("crm_integrations").update(patch).eq("id", integration_id).execute()
     return resp.data[0] if resp.data else {"id": integration_id}
@@ -4204,7 +4482,8 @@ async def crm_sync_log(client_id: ClientId, limit: int = Query(default=50)) -> l
 # ---------------------------------------------------------------------------
 
 @app.post("/sequences/generate", tags=["AI"])
-async def generate_sequence(client_id: ClientId, body: dict) -> dict:
+@limiter.limit("10/hour")
+async def generate_sequence(request: Request, client_id: ClientId, body: dict) -> dict:
     """
     Generate a multi-step email sequence from a briefing using Claude Sonnet.
 

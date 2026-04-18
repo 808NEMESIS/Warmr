@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Warmr — Campagne performance</title>
+  <link rel="icon" type="image/png" href="logo-warmr.png">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <style>
+    .chart-card { padding: 1.25rem 1.5rem; }
+    .chart-legend {
+      display: flex; gap: 1rem; flex-wrap: wrap;
+      font-size: .75rem; color: var(--muted); margin-bottom: .75rem;
+    }
+    .legend-swatch {
+      display: inline-block; width: 10px; height: 10px;
+      border-radius: 2px; margin-right: .35rem; vertical-align: middle;
+    }
+    .perf-table { width: 100%; border-collapse: collapse; font-size: .8125rem; }
+    .perf-table th { text-align: left; font-size: .7rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; padding: .75rem 1rem; border-bottom: 1px solid var(--border); }
+    .perf-table td { padding: .75rem 1rem; border-bottom: 1px solid var(--border); }
+    .perf-table tr:hover { background: #faf8ff; cursor: pointer; }
+    .rate-bar {
+      display: inline-block; height: 6px; width: 80px;
+      background: var(--border); border-radius: 99px; overflow: hidden;
+      vertical-align: middle; margin-right: .5rem;
+    }
+    .rate-bar-fill { height: 100%; border-radius: 99px; }
+    .metric-delta {
+      font-size: .7rem; font-weight: 700; margin-left: .375rem;
+    }
+    .metric-delta.up   { color: var(--success); }
+    .metric-delta.down { color: var(--danger); }
+  </style>
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-mark">W</div>
+    <span class="logo-text">Warmr</span>
+  </div>
+  <div style="padding:.75rem 0;flex:1">
+    <div class="sidebar-section-label">Overzicht</div>
+    <a class="nav-link" href="dashboard.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+      Dashboard
+    </a>
+    <div class="sidebar-section-label">Campagnes</div>
+    <a class="nav-link" href="campaigns.html">Campagnes</a>
+    <a class="nav-link active" href="campaign-performance.html">Performance</a>
+    <a class="nav-link" href="leads.html">Leads</a>
+    <a class="nav-link" href="unified-inbox.html">Unified Inbox</a>
+    <div class="sidebar-section-label">Infrastructuur</div>
+    <a class="nav-link" href="inboxes.html">Inboxes</a>
+    <a class="nav-link" href="domains.html">Domeinen</a>
+    <div class="sidebar-section-label">Account</div>
+    <a class="nav-link" href="settings.html">Instellingen</a>
+  </div>
+  <div class="sidebar-footer">
+    <div style="display:flex;align-items:center;gap:.75rem">
+      <div class="avatar avatar-sm" id="sidebar-avatar">?</div>
+      <div style="flex:1;min-width:0">
+        <div class="text-sm font-semi truncate" id="sidebar-name">Laden…</div>
+        <div class="text-xs text-muted">Pro plan</div>
+      </div>
+      <button class="btn-icon" onclick="logout()" title="Uitloggen">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      </button>
+    </div>
+  </div>
+</aside>
+
+<header class="topbar">
+  <div class="topbar-left">
+    <h1 style="font-size:1.25rem;font-family:var(--font-disp);font-weight:400">Campagne performance</h1>
+  </div>
+  <div class="topbar-right">
+    <select class="form-select" id="range-select" style="width:auto;font-size:.8125rem;padding:.4rem .8rem" onchange="loadPerf()">
+      <option value="7">Afgelopen 7 dagen</option>
+      <option value="30" selected>Afgelopen 30 dagen</option>
+      <option value="90">Afgelopen 90 dagen</option>
+    </select>
+    <div id="topbar-client" style="display:flex;align-items:center;gap:.625rem;cursor:pointer" onclick="window.location.href='settings.html'">
+      <div class="avatar avatar-sm">?</div>
+      <span class="text-sm font-semi client-name" style="max-width:120px">—</span>
+    </div>
+  </div>
+</header>
+
+<div class="main-layout">
+  <div class="main-content">
+    <div class="page">
+
+      <div class="stats-grid" style="grid-template-columns:repeat(6,1fr);margin-bottom:1.5rem">
+        <div class="stat-card"><div class="stat-label">Verzonden</div><div class="stat-value" id="s-sent">—</div></div>
+        <div class="stat-card"><div class="stat-label">Open rate</div><div class="stat-value" id="s-open">—</div></div>
+        <div class="stat-card"><div class="stat-label">Click rate</div><div class="stat-value" id="s-click">—</div></div>
+        <div class="stat-card stat-card-accent"><div class="stat-label">Reply rate</div><div class="stat-value" id="s-reply">—</div></div>
+        <div class="stat-card"><div class="stat-label">Bounce rate</div><div class="stat-value" id="s-bounce">—</div></div>
+        <div class="stat-card"><div class="stat-label">Unsub rate</div><div class="stat-value" id="s-unsub">—</div></div>
+      </div>
+
+      <div class="card chart-card" style="margin-bottom:1.5rem">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem">
+          <h3 style="font-family:var(--font-disp);font-size:1.0625rem">Dagelijkse trend</h3>
+          <div class="chart-legend">
+            <span><span class="legend-swatch" style="background:#94a3b8"></span>Verzonden</span>
+            <span><span class="legend-swatch" style="background:#74b9ff"></span>Opens</span>
+            <span><span class="legend-swatch" style="background:#00b894"></span>Replies</span>
+            <span><span class="legend-swatch" style="background:#e17055"></span>Bounces</span>
+          </div>
+        </div>
+        <div id="trend-chart" style="width:100%;height:280px"></div>
+      </div>
+
+      <div class="card" style="padding:0;overflow:hidden">
+        <div style="padding:1rem 1.5rem;border-bottom:1px solid var(--border)">
+          <h3 style="font-family:var(--font-disp);font-size:1.0625rem">Per campagne</h3>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="perf-table">
+            <thead>
+              <tr>
+                <th>Campagne</th>
+                <th>Status</th>
+                <th>Verzonden</th>
+                <th>Open rate</th>
+                <th>Click rate</th>
+                <th>Reply rate</th>
+                <th>Bounce rate</th>
+              </tr>
+            </thead>
+            <tbody id="perf-tbody">
+              <tr><td colspan="7" style="text-align:center;color:var(--muted);padding:2rem">Laden…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+<script src="config.js"></script>
+<script src="app.js"></script>
+<script>
+var _perfData = null;
+
+(async function() {
+  try {
+    await requireAuth();
+    populateTopbar();
+    await loadPerf();
+  } catch (e) { console.error(e); }
+})();
+
+function fmtRate(v) {
+  if (v == null) return '—';
+  return (Number(v) * 100).toFixed(1) + '%';
+}
+
+function fmtInt(v) {
+  if (v == null) return '0';
+  return String(Number(v) || 0);
+}
+
+async function loadPerf() {
+  var days = document.getElementById('range-select').value;
+  try {
+    _perfData = await api('/campaigns/performance?days=' + days);
+    renderOverall();
+    renderChart();
+    renderTable();
+  } catch (e) { toast('Kon performance niet laden: ' + e.message, 'error'); }
+}
+
+function renderOverall() {
+  var o = _perfData.overall || {};
+  document.getElementById('s-sent').textContent = fmtInt(o.sent);
+  document.getElementById('s-open').textContent = fmtRate(o.open_rate);
+  document.getElementById('s-click').textContent = fmtRate(o.click_rate);
+  document.getElementById('s-reply').textContent = fmtRate(o.reply_rate);
+  var br = o.bounce_rate || 0;
+  var bEl = document.getElementById('s-bounce');
+  bEl.textContent = fmtRate(br);
+  bEl.style.color = br > 0.03 ? 'var(--danger)' : '';
+  document.getElementById('s-unsub').textContent = fmtRate(o.unsub_rate);
+}
+
+function renderChart() {
+  var data = _perfData.daily_trend || [];
+  var host = document.getElementById('trend-chart');
+  if (!data.length) {
+    host.innerHTML = '<div style="text-align:center;padding:3rem;color:var(--muted);font-size:.875rem">Nog geen data in deze periode.</div>';
+    return;
+  }
+
+  var W = host.clientWidth || 800;
+  var H = 280;
+  var pad = { l: 40, r: 20, t: 20, b: 30 };
+  var plotW = W - pad.l - pad.r;
+  var plotH = H - pad.t - pad.b;
+
+  var maxSent = Math.max.apply(null, data.map(function(d) { return d.sent || 0; }));
+  var maxOther = Math.max.apply(null, data.map(function(d) { return Math.max(d.opened||0, d.replied||0, d.bounced||0); }));
+  var maxVal = Math.max(maxSent, maxOther, 1);
+
+  function x(i) { return pad.l + (data.length <= 1 ? plotW/2 : (i / (data.length - 1)) * plotW); }
+  function y(v) { return pad.t + plotH - (v / maxVal) * plotH; }
+
+  function line(key, color) {
+    var pts = data.map(function(d, i) { return x(i) + ',' + y(d[key] || 0); });
+    return '<path d="M ' + pts.join(' L ') + '" fill="none" stroke="' + color + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
+  }
+  function dots(key, color) {
+    return data.map(function(d, i) {
+      return '<circle cx="' + x(i) + '" cy="' + y(d[key]||0) + '" r="2.5" fill="' + color + '"/>';
+    }).join('');
+  }
+
+  // Y axis gridlines + labels (5 ticks)
+  var gridlines = '';
+  var yLabels = '';
+  for (var t = 0; t <= 4; t++) {
+    var yPos = pad.t + plotH - (t / 4) * plotH;
+    var val = Math.round((t / 4) * maxVal);
+    gridlines += '<line x1="' + pad.l + '" x2="' + (W - pad.r) + '" y1="' + yPos + '" y2="' + yPos + '" stroke="var(--border)" stroke-dasharray="2,4"/>';
+    yLabels += '<text x="' + (pad.l - 8) + '" y="' + (yPos + 4) + '" font-size="10" fill="var(--muted)" text-anchor="end">' + val + '</text>';
+  }
+
+  // X labels — first, middle, last
+  var xLabels = '';
+  var idxs = data.length <= 3 ? data.map(function(_, i) { return i; }) : [0, Math.floor(data.length/2), data.length - 1];
+  idxs.forEach(function(i) {
+    var d = data[i];
+    xLabels += '<text x="' + x(i) + '" y="' + (H - 8) + '" font-size="10" fill="var(--muted)" text-anchor="middle">' + (d.date ? d.date.slice(5) : '') + '</text>';
+  });
+
+  host.innerHTML =
+    '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" height="' + H + '">' +
+      gridlines +
+      line('sent',    '#94a3b8') + dots('sent',    '#94a3b8') +
+      line('opened',  '#74b9ff') + dots('opened',  '#74b9ff') +
+      line('replied', '#00b894') + dots('replied', '#00b894') +
+      line('bounced', '#e17055') + dots('bounced', '#e17055') +
+      yLabels + xLabels +
+    '</svg>';
+}
+
+function renderTable() {
+  var camps = (_perfData.campaigns || []).filter(function(c) { return c.sent > 0 || c.status === 'active'; });
+  var tbody = document.getElementById('perf-tbody');
+  if (!camps.length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:2rem">Geen actieve campagnes met verzonden emails.</td></tr>';
+    return;
+  }
+  // Sort by sent desc
+  camps.sort(function(a, b) { return (b.sent||0) - (a.sent||0); });
+
+  tbody.innerHTML = camps.map(function(c) {
+    var statusBadge = c.status === 'active' ? '<span class="badge badge-success">actief</span>'
+      : c.status === 'paused' ? '<span class="badge badge-warning">gepauzeerd</span>'
+      : '<span class="badge badge-muted">' + (c.status || '—') + '</span>';
+    var bounceColor = (c.bounce_rate||0) > 0.03 ? 'var(--danger)' : 'var(--text)';
+    function bar(rate, color) {
+      return '<span class="rate-bar"><span class="rate-bar-fill" style="width:' + Math.min(100, (rate||0)*100) + '%;background:' + color + '"></span></span>';
+    }
+    return '<tr onclick="window.location.href=\'campaigns.html#detail-' + c.id + '\'">' +
+      '<td style="font-weight:600">' + escapeHtml(c.name || '—') + '</td>' +
+      '<td>' + statusBadge + '</td>' +
+      '<td>' + fmtInt(c.sent) + '</td>' +
+      '<td>' + bar(c.open_rate,   '#74b9ff') + fmtRate(c.open_rate) + '</td>' +
+      '<td>' + bar(c.click_rate,  '#6c5ce7') + fmtRate(c.click_rate) + '</td>' +
+      '<td>' + bar(c.reply_rate,  '#00b894') + fmtRate(c.reply_rate) + '</td>' +
+      '<td style="color:' + bounceColor + '">' + fmtRate(c.bounce_rate) + '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+    return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c];
+  });
+}
+
+async function populateTopbar() {
+  var u = await _supabase.auth.getUser();
+  var user = u.data && u.data.user;
+  if (user) {
+    var email = user.email || '';
+    var initials = email.slice(0,2).toUpperCase();
+    document.querySelectorAll('.avatar-sm').forEach(function(a) { a.textContent = initials; });
+    document.querySelectorAll('.client-name').forEach(function(n) { n.textContent = email.split('@')[0]; });
+    document.getElementById('sidebar-name').textContent = email.split('@')[0];
+  }
+}
+
+window.addEventListener('resize', function() { if (_perfData) renderChart(); });
+</script>
+</body>
+</html>

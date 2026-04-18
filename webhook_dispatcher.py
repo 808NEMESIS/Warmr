@@ -113,11 +113,18 @@ def deliver(
 
     Does not raise — all errors are caught and returned as failure.
     """
+    # Nonce + timestamp for replay protection; receivers should reject duplicate nonces
+    # and requests with timestamps older than 5 minutes.
+    import secrets
+    nonce = secrets.token_urlsafe(16)
+    timestamp = _now_utc()
+
     body_bytes = json.dumps({
         "event":      event_type,
         "payload":    payload,
         "webhook_id": webhook["id"],
-        "sent_at":    _now_utc(),
+        "sent_at":    timestamp,
+        "nonce":      nonce,
     }, ensure_ascii=False).encode("utf-8")
 
     signature = _sign_payload(webhook["secret"], body_bytes)
@@ -127,6 +134,8 @@ def deliver(
         "X-Warmr-Signature":  f"sha256={signature}",
         "X-Warmr-Event":      event_type,
         "X-Warmr-Attempt":    str(attempt_count),
+        "X-Warmr-Timestamp":  timestamp,
+        "X-Warmr-Nonce":      nonce,
         "User-Agent":         "Warmr-Webhooks/1.0",
     }
 

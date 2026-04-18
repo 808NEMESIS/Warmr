@@ -1,0 +1,5 @@
+Contact: mailto:info@aeryssolution.nl
+Expires: 2027-01-01T00:00:00.000Z
+Preferred-Languages: nl, en
+Policy: https://github.com/808NEMESIS/Warmr
+Acknowledgments: Security researchers reporting valid issues are credited in the release notes.

@@ -20,6 +20,30 @@
     .dot-clicked { background: var(--primary); }
     .dot-replied { background: var(--success); }
     .dot-bounced { background: var(--danger); }
+    .eng-pill {
+      display: inline-flex; align-items: center; gap: .3rem;
+      font-size: .7rem; font-weight: 700;
+      padding: .15rem .5rem; border-radius: 99px;
+    }
+    .eng-hot  { background: #fed7aa; color: #9a3412; }
+    .eng-warm { background: #fef3c7; color: #92400e; }
+    .eng-cold { background: #e0e7ff; color: #3730a3; }
+    .eng-zero { background: #f3f4f6; color: #6b7280; }
+
+    .stage-dot {
+      display: inline-block;
+      width: 8px; height: 8px; border-radius: 50%;
+      margin-right: .375rem; vertical-align: middle;
+    }
+    .sd-cold    { background: #94a3b8; }
+    .sd-warm    { background: #fbbf24; }
+    .sd-hot     { background: #f97316; }
+    .sd-meeting { background: #10b981; }
+    .sd-won     { background: #059669; }
+    .sd-nurture { background: #8b5cf6; }
+    .sd-lost    { background: #ef4444; }
+    .sd-unsubscribed { background: #6b7280; }
+
     .status-pill { display: inline-block; font-size: .7rem; font-weight: 600; padding: .15rem .5rem; border-radius: 99px; text-transform: lowercase; }
     .s-new { background: #e0e7ff; color: #3730a3; }
     .s-active { background: #dbeafe; color: #1e40af; }
@@ -128,33 +152,68 @@
         <div class="stat-card"><div class="stat-label">Unsubscribed</div><div class="stat-value" id="s-unsub">—</div></div>
       </div>
 
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem;gap:.75rem;flex-wrap:wrap">
-        <div class="filter-chips">
-          <div class="filter-chip active" onclick="setFilter('all',this)">Alle</div>
-          <div class="filter-chip" onclick="setFilter('new',this)">Nieuw</div>
-          <div class="filter-chip" onclick="setFilter('active',this)">Actief</div>
-          <div class="filter-chip" onclick="setFilter('contacted',this)">Gecontacteerd</div>
-          <div class="filter-chip" onclick="setFilter('replied',this)">Replied</div>
-          <div class="filter-chip" onclick="setFilter('interested',this)">Geïnteresseerd</div>
-          <div class="filter-chip" onclick="setFilter('bounced',this)">Bounced</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem;gap:.75rem;flex-wrap:wrap">
+        <div class="filter-chips" style="flex-wrap:wrap">
+          <div class="filter-chip active" onclick="setStatusFilter('all',this)">Alle</div>
+          <div class="filter-chip" onclick="setStatusFilter('new',this)">Nieuw</div>
+          <div class="filter-chip" onclick="setStatusFilter('active',this)">Actief</div>
+          <div class="filter-chip" onclick="setStatusFilter('contacted',this)">Gecontacteerd</div>
+          <div class="filter-chip" onclick="setStatusFilter('replied',this)">Replied</div>
+          <div class="filter-chip" onclick="setStatusFilter('interested',this)">Geïnteresseerd</div>
+          <div class="filter-chip" onclick="setStatusFilter('bounced',this)">Bounced</div>
         </div>
         <input type="search" class="form-input" id="search" placeholder="Zoek op naam, email of bedrijf…" style="width:280px;font-size:.8125rem;padding:.4rem .75rem" oninput="render()">
+      </div>
+
+      <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1.25rem;flex-wrap:wrap">
+        <span class="text-xs text-muted" style="font-weight:700;text-transform:uppercase;letter-spacing:.05em">Engagement:</span>
+        <div class="filter-chips">
+          <div class="filter-chip active" data-eng="all" onclick="setEngFilter('all',this)">Alle</div>
+          <div class="filter-chip" data-eng="hot"  onclick="setEngFilter('hot',this)"><span class="stage-dot" style="background:#f97316;margin-right:.3rem"></span>Hot (50+)</div>
+          <div class="filter-chip" data-eng="warm" onclick="setEngFilter('warm',this)"><span class="stage-dot" style="background:#fbbf24;margin-right:.3rem"></span>Warm (20-49)</div>
+          <div class="filter-chip" data-eng="cold" onclick="setEngFilter('cold',this)"><span class="stage-dot" style="background:#94a3b8;margin-right:.3rem"></span>Cold (&lt;20)</div>
+          <div class="filter-chip" data-eng="stale" onclick="setEngFilter('stale',this)">Stale (&gt;14d inactief)</div>
+        </div>
+        <div style="flex:1"></div>
+        <select class="form-select" id="sort-select" style="width:auto;font-size:.8125rem;padding:.4rem .8rem" onchange="render()">
+          <option value="engagement_desc">Engagement ↓</option>
+          <option value="engagement_asc">Engagement ↑</option>
+          <option value="created_desc" selected>Recent toegevoegd</option>
+          <option value="created_asc">Oudste eerst</option>
+          <option value="activity_desc">Laatst actief</option>
+        </select>
+      </div>
+
+      <div id="bulk-bar" style="display:none;align-items:center;gap:.75rem;padding:.625rem 1rem;margin-bottom:.75rem;background:#ede8ff;border:1.5px solid var(--primary-lt);border-radius:8px;font-size:.8125rem">
+        <span id="bulk-count" style="font-weight:700;color:var(--primary)">0 geselecteerd</span>
+        <div style="flex:1"></div>
+        <button class="btn btn-ghost btn-sm" onclick="bulkStage('cold')">→ Cold</button>
+        <button class="btn btn-ghost btn-sm" onclick="bulkStage('warm')">→ Warm</button>
+        <button class="btn btn-ghost btn-sm" onclick="bulkStage('nurture')">→ Nurture</button>
+        <button class="btn btn-ghost btn-sm" onclick="bulkSuppress()">Suppresseer</button>
+        <button class="btn btn-ghost btn-sm" onclick="bulkExport()">CSV export</button>
+        <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="bulkPurge()">Verwijder (GDPR)</button>
+        <button class="btn-icon" onclick="clearSelection()" title="Deselecteer alles">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
       </div>
 
       <div class="card" style="padding:0;overflow:hidden">
         <table class="lead-table">
           <thead>
             <tr>
+              <th style="width:36px"><input type="checkbox" id="select-all" onclick="toggleSelectAll(this)"></th>
               <th>Lead</th>
               <th>Bedrijf</th>
-              <th>Status</th>
+              <th>Funnel</th>
               <th>Engagement</th>
+              <th>Status</th>
               <th>Campagne</th>
               <th>Laatst actief</th>
             </tr>
           </thead>
           <tbody id="lead-tbody">
-            <tr><td colspan="6" style="text-align:center;color:var(--muted);padding:2rem">Laden…</td></tr>
+            <tr><td colspan="8" style="text-align:center;color:var(--muted);padding:2rem">Laden…</td></tr>
           </tbody>
         </table>
       </div>
@@ -174,7 +233,8 @@
 <script src="app.js"></script>
 <script>
 var _leads = [];
-var _filter = 'all';
+var _statusFilter = 'all';
+var _engFilter = 'all';
 
 (async function() {
   try {
@@ -200,17 +260,54 @@ function updateStats() {
   document.getElementById('s-unsub').textContent = _leads.filter(function(l) { return l.status === 'unsubscribed'; }).length;
 }
 
-function setFilter(f, el) {
-  _filter = f;
-  document.querySelectorAll('.filter-chip').forEach(function(c) { c.classList.remove('active'); });
-  if (el) el.classList.add('active');
+function setStatusFilter(f, el) {
+  _statusFilter = f;
+  if (el) {
+    // Only reset status row chips (not engagement row)
+    el.parentElement.querySelectorAll('.filter-chip').forEach(function(c) { c.classList.remove('active'); });
+    el.classList.add('active');
+  }
   render();
+}
+
+function setEngFilter(f, el) {
+  _engFilter = f;
+  if (el) {
+    el.parentElement.querySelectorAll('.filter-chip').forEach(function(c) { c.classList.remove('active'); });
+    el.classList.add('active');
+  }
+  render();
+}
+
+function engCategory(score) {
+  score = Number(score) || 0;
+  if (score >= 50) return 'hot';
+  if (score >= 20) return 'warm';
+  if (score > 0)   return 'cold';
+  return 'zero';
+}
+
+function daysSince(iso) {
+  if (!iso) return 999;
+  try {
+    var d = new Date(iso);
+    return Math.floor((Date.now() - d.getTime()) / 86400000);
+  } catch { return 999; }
 }
 
 function render() {
   var search = (document.getElementById('search').value || '').toLowerCase();
+  var sortMode = document.getElementById('sort-select').value;
+
   var filtered = _leads.filter(function(l) {
-    if (_filter !== 'all' && l.status !== _filter) return false;
+    if (_statusFilter !== 'all' && l.status !== _statusFilter) return false;
+
+    if (_engFilter !== 'all') {
+      if (_engFilter === 'stale') {
+        if (daysSince(l.engagement_updated_at || l.created_at) < 14) return false;
+      } else if (engCategory(l.engagement_score) !== _engFilter) return false;
+    }
+
     if (search) {
       var hay = ((l.email||'') + (l.first_name||'') + (l.last_name||'') + (l.company||'')).toLowerCase();
       if (!hay.includes(search)) return false;
@@ -218,9 +315,21 @@ function render() {
     return true;
   });
 
+  // Sort
+  filtered.sort(function(a, b) {
+    switch (sortMode) {
+      case 'engagement_desc': return (Number(b.engagement_score)||0) - (Number(a.engagement_score)||0);
+      case 'engagement_asc':  return (Number(a.engagement_score)||0) - (Number(b.engagement_score)||0);
+      case 'created_asc':     return new Date(a.created_at||0) - new Date(b.created_at||0);
+      case 'activity_desc':   return new Date(b.engagement_updated_at||b.created_at||0) - new Date(a.engagement_updated_at||a.created_at||0);
+      case 'created_desc':
+      default:                return new Date(b.created_at||0) - new Date(a.created_at||0);
+    }
+  });
+
   var tbody = document.getElementById('lead-tbody');
   if (!filtered.length) {
-    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:2rem">Geen leads gevonden</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:2rem">Geen leads gevonden</td></tr>';
     return;
   }
 
@@ -229,12 +338,14 @@ function render() {
     var initials = (l.email || '??').slice(0,2).toUpperCase();
     var statusClass = 's-' + (l.status || 'new');
     var cf = l.custom_fields || {};
+    var score = Number(l.engagement_score) || 0;
+    var engCat = engCategory(score);
+    var stage = l.funnel_stage || 'cold';
+    var lastActive = l.engagement_updated_at || l.created_at;
 
-    // Engagement dots from custom_fields (Heatr enrichment data)
-    var dots = '';
-    if (cf.heatr_score) dots += '<span class="dot dot-sent" title="Heatr score: ' + cf.heatr_score + '"></span>';
-
-    return '<tr onclick="openDrawer(\'' + l.id + '\')">' +
+    var checked = _selected.has(l.id) ? 'checked' : '';
+    return '<tr onclick="rowClick(event,\'' + l.id + '\')">' +
+      '<td onclick="event.stopPropagation()"><input type="checkbox" ' + checked + ' onchange="toggleSelect(\'' + l.id + '\',this)"></td>' +
       '<td>' +
         '<div style="display:flex;align-items:center;gap:.625rem">' +
           '<div class="avatar avatar-sm" style="font-size:.65rem">' + initials + '</div>' +
@@ -245,12 +356,160 @@ function render() {
         '</div>' +
       '</td>' +
       '<td style="color:var(--muted)">' + (l.company || cf.company || '—') + '</td>' +
+      '<td><span class="stage-dot sd-' + stage + '"></span><span style="font-size:.8rem;text-transform:capitalize">' + stage + '</span></td>' +
+      '<td><span class="eng-pill eng-' + engCat + '" title="+5 open, +10 klik, +25 reply">' + score.toFixed(0) + '</span></td>' +
       '<td><span class="status-pill ' + statusClass + '">' + (l.status || 'new') + '</span></td>' +
-      '<td><div class="engagement-dots">' + dots + '</div></td>' +
       '<td style="color:var(--muted);font-size:.78rem">' + (cf.campaign_name || '—') + '</td>' +
-      '<td style="color:var(--muted);font-size:.78rem">' + timeAgo(l.created_at) + '</td>' +
+      '<td style="color:var(--muted);font-size:.78rem">' + timeAgo(lastActive) + '</td>' +
     '</tr>';
   }).join('');
+}
+
+// ── Bulk selection ────────────────────────────────────────────────────────
+var _selected = new Set();
+
+function rowClick(e, id) {
+  // Open drawer if not clicking in checkbox cell
+  openDrawer(id);
+}
+
+function toggleSelect(id, el) {
+  if (el.checked) _selected.add(id); else _selected.delete(id);
+  updateBulkBar();
+}
+
+function toggleSelectAll(el) {
+  var tbody = document.getElementById('lead-tbody');
+  tbody.querySelectorAll('input[type="checkbox"]').forEach(function(cb) {
+    cb.checked = el.checked;
+    var row = cb.closest('tr');
+    var idMatch = row && row.outerHTML.match(/rowClick\(event,'([^']+)'/);
+    if (idMatch) {
+      if (el.checked) _selected.add(idMatch[1]); else _selected.delete(idMatch[1]);
+    }
+  });
+  updateBulkBar();
+}
+
+function clearSelection() {
+  _selected.clear();
+  document.getElementById('select-all').checked = false;
+  document.querySelectorAll('#lead-tbody input[type="checkbox"]').forEach(function(cb) { cb.checked = false; });
+  updateBulkBar();
+}
+
+function updateBulkBar() {
+  var bar = document.getElementById('bulk-bar');
+  var count = _selected.size;
+  if (count === 0) { bar.style.display = 'none'; return; }
+  bar.style.display = 'flex';
+  document.getElementById('bulk-count').textContent = count + ' geselecteerd';
+}
+
+async function bulkStage(stage) {
+  var ids = Array.from(_selected);
+  if (!ids.length) return;
+  var confirmed = await confirmDialog({
+    title: 'Verplaats ' + ids.length + ' leads',
+    body: 'Alle geselecteerde leads verplaatsen naar funnel stage "' + stage + '"?',
+    confirmText: 'Verplaatsen',
+  });
+  if (!confirmed) return;
+
+  var snapshot = ids.map(function(id) {
+    var l = _leads.find(function(x) { return x.id === id; });
+    return l ? { id: id, prev: l.funnel_stage } : null;
+  }).filter(Boolean);
+
+  var errors = 0;
+  for (var id of ids) {
+    try {
+      await api('/funnel/move-stage', { method: 'POST', body: JSON.stringify({ lead_id: id, stage: stage }) });
+      var l = _leads.find(function(x) { return x.id === id; });
+      if (l) l.funnel_stage = stage;
+    } catch (e) { errors++; }
+  }
+  render();
+  clearSelection();
+
+  toastWithUndo(
+    ids.length + ' leads verplaatst naar ' + stage + (errors ? ' (' + errors + ' mislukt)' : ''),
+    'Ongedaan',
+    async function() {
+      for (var s of snapshot) {
+        try {
+          await api('/funnel/move-stage', { method: 'POST', body: JSON.stringify({ lead_id: s.id, stage: s.prev || 'cold' }) });
+          var l = _leads.find(function(x) { return x.id === s.id; });
+          if (l) l.funnel_stage = s.prev;
+        } catch {}
+      }
+      render();
+      toast('Ongedaan gemaakt', 'info');
+    }
+  );
+}
+
+async function bulkSuppress() {
+  var ids = Array.from(_selected);
+  if (!ids.length) return;
+  var confirmed = await confirmDialog({
+    title: 'Suppresseer ' + ids.length + ' leads',
+    body: 'Deze emails worden toegevoegd aan de suppression list en krijgen geen emails meer.',
+    confirmText: 'Suppresseer',
+    danger: true,
+  });
+  if (!confirmed) return;
+
+  var ok = 0;
+  for (var id of ids) {
+    var l = _leads.find(function(x) { return x.id === id; });
+    if (!l || !l.email) continue;
+    try {
+      await api('/suppression', { method: 'POST', body: JSON.stringify({ email: l.email, reason: 'manual' }) });
+      ok++;
+    } catch {}
+  }
+  clearSelection();
+  toast(ok + ' leads toegevoegd aan suppression list', 'success');
+}
+
+function bulkExport() {
+  var ids = Array.from(_selected);
+  if (!ids.length) return;
+  var rows = _leads.filter(function(l) { return ids.includes(l.id); });
+  var csv = 'email,first_name,last_name,company,status,funnel_stage,engagement_score,created_at\n' +
+    rows.map(function(l) {
+      return [l.email, l.first_name, l.last_name, l.company, l.status, l.funnel_stage, l.engagement_score, l.created_at]
+        .map(function(v) { return '"' + (v||'').toString().replace(/"/g,'""') + '"'; }).join(',');
+    }).join('\n');
+  var blob = new Blob([csv], { type: 'text/csv' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url; a.download = 'warmr-leads-selection.csv'; a.click();
+  toast(rows.length + ' leads geëxporteerd', 'success');
+}
+
+async function bulkPurge() {
+  var ids = Array.from(_selected);
+  if (!ids.length) return;
+  var confirmed = await confirmDialog({
+    title: 'Verwijder ' + ids.length + ' leads',
+    body: 'ALLE data van deze leads wordt permanent verwijderd (GDPR). Dit kan niet ongedaan worden gemaakt.',
+    confirmText: 'Verwijder permanent',
+    danger: true,
+  });
+  if (!confirmed) return;
+
+  var ok = 0;
+  for (var id of ids) {
+    try {
+      await api('/leads/' + id + '/purge', { method: 'DELETE' });
+      ok++;
+    } catch {}
+  }
+  toast(ok + ' leads verwijderd (GDPR)', 'success');
+  clearSelection();
+  loadLeads();
 }
 
 function openDrawer(leadId) {

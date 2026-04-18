@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Warmr — Funnel</title>
+  <link rel="icon" type="image/png" href="logo-warmr.png">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <style>
+    .funnel-board {
+      display: flex;
+      gap: 1rem;
+      overflow-x: auto;
+      padding-bottom: 1rem;
+      min-height: calc(100vh - 200px);
+    }
+    .funnel-col {
+      flex: 0 0 280px;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg);
+      border-radius: var(--radius-card);
+      border: 1.5px solid var(--border);
+      max-height: calc(100vh - 200px);
+    }
+    .funnel-col.drag-over {
+      border-color: var(--primary);
+      background: #f4f1ff;
+    }
+    .funnel-col-header {
+      padding: .875rem 1rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .funnel-col-title {
+      display: flex; align-items: center; gap: .5rem;
+      font-size: .875rem; font-weight: 700;
+    }
+    .stage-dot {
+      width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+    }
+    .stage-cold    { background: #94a3b8; }
+    .stage-warm    { background: #fbbf24; }
+    .stage-hot     { background: #f97316; }
+    .stage-meeting { background: #10b981; }
+    .stage-won     { background: #059669; }
+    .stage-nurture { background: #8b5cf6; }
+    .stage-lost    { background: #ef4444; }
+    .stage-unsubscribed { background: #6b7280; }
+
+    .funnel-col-count {
+      font-size: .7rem;
+      font-weight: 700;
+      background: var(--surface);
+      color: var(--muted);
+      padding: .15rem .45rem;
+      border-radius: 99px;
+      min-width: 22px;
+      text-align: center;
+    }
+
+    .funnel-col-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: .5rem;
+      display: flex;
+      flex-direction: column;
+      gap: .5rem;
+    }
+
+    .lead-card {
+      background: var(--surface);
+      border: 1.5px solid var(--border);
+      border-radius: 8px;
+      padding: .75rem;
+      cursor: grab;
+      transition: all .15s;
+      font-size: .8125rem;
+    }
+    .lead-card:hover {
+      border-color: var(--primary-lt);
+      box-shadow: var(--shadow-sm);
+      transform: translateY(-1px);
+    }
+    .lead-card.dragging {
+      opacity: 0.4;
+      cursor: grabbing;
+    }
+
+    .lead-card-top {
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      margin-bottom: .375rem;
+    }
+    .lead-card-avatar {
+      width: 28px; height: 28px; border-radius: 50%;
+      background: linear-gradient(135deg, #a29bfe, #6c5ce7);
+      color: #fff;
+      display: flex; align-items: center; justify-content: center;
+      font-size: .65rem; font-weight: 700;
+      flex-shrink: 0;
+    }
+    .lead-card-name {
+      font-weight: 600;
+      font-size: .8125rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+      min-width: 0;
+    }
+    .lead-card-email {
+      font-size: .7rem;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .lead-card-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: .5rem;
+      gap: .5rem;
+    }
+    .lead-card-company {
+      font-size: .7rem;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+      min-width: 0;
+    }
+    .engagement-pill {
+      font-size: .65rem;
+      font-weight: 700;
+      padding: .1rem .4rem;
+      border-radius: 99px;
+      flex-shrink: 0;
+    }
+    .eng-hot  { background: #fed7aa; color: #9a3412; }
+    .eng-warm { background: #fef3c7; color: #92400e; }
+    .eng-cold { background: #e0e7ff; color: #3730a3; }
+    .eng-zero { background: #f3f4f6; color: #6b7280; }
+
+    .filters-bar {
+      display: flex;
+      gap: .75rem;
+      align-items: center;
+      margin-bottom: 1.25rem;
+      flex-wrap: wrap;
+    }
+
+    .empty-col {
+      text-align: center;
+      color: var(--muted);
+      font-size: .75rem;
+      padding: 2rem .5rem;
+    }
+
+    /* Drawer */
+    .lead-drawer {
+      position: fixed; top: 0; right: -600px;
+      width: 600px; height: 100vh;
+      background: var(--surface);
+      box-shadow: var(--shadow-lg);
+      z-index: 500;
+      transition: right .25s;
+      display: flex; flex-direction: column;
+      overflow-y: auto;
+    }
+    .lead-drawer.open { right: 0; }
+    .drawer-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.3);
+      z-index: 400;
+      display: none;
+    }
+    .drawer-overlay.open { display: block; }
+
+    .enrichment-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem .75rem; }
+    .enrichment-item { padding: .5rem 0; }
+    .enrichment-label { font-size: .65rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+    .enrichment-value { font-size: .8125rem; color: var(--text); margin-top: .15rem; }
+
+    .score-bar {
+      width: 100%; height: 8px;
+      background: var(--border); border-radius: 99px;
+      overflow: hidden;
+    }
+    .score-bar-fill {
+      height: 100%;
+      border-radius: 99px;
+      transition: width .3s;
+    }
+
+    @media (max-width: 900px) {
+      .funnel-board { gap: .5rem; }
+      .funnel-col { flex: 0 0 240px; }
+    }
+  </style>
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-mark">W</div>
+    <span class="logo-text">Warmr</span>
+  </div>
+  <div style="padding:.75rem 0;flex:1">
+    <div class="sidebar-section-label">Overzicht</div>
+    <a class="nav-link" href="dashboard.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+      Dashboard
+    </a>
+    <a class="nav-link active" href="funnel.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+      Funnel
+    </a>
+    <div class="sidebar-section-label">Campagnes</div>
+    <a class="nav-link" href="campaigns.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 9.8 19.79 19.79 0 0112 4.18a2 2 0 012 2V8l2 1.5"/></svg>
+      Campagnes
+    </a>
+    <a class="nav-link" href="leads.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+      Leads
+    </a>
+    <a class="nav-link" href="unified-inbox.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+      Unified Inbox
+    </a>
+    <div class="sidebar-section-label">Infrastructuur</div>
+    <a class="nav-link" href="inboxes.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+      Inboxes
+    </a>
+    <a class="nav-link" href="domains.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/></svg>
+      Domeinen
+    </a>
+    <div class="sidebar-section-label">Account</div>
+    <a class="nav-link" href="settings.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/></svg>
+      Instellingen
+    </a>
+  </div>
+  <div class="sidebar-footer">
+    <div style="display:flex;align-items:center;gap:.75rem">
+      <div class="avatar avatar-sm" id="sidebar-avatar">?</div>
+      <div style="flex:1;min-width:0">
+        <div class="text-sm font-semi truncate" id="sidebar-name">Laden…</div>
+        <div class="text-xs text-muted">Pro plan</div>
+      </div>
+      <button class="btn-icon" onclick="logout()" title="Uitloggen">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      </button>
+    </div>
+  </div>
+</aside>
+
+<header class="topbar">
+  <div class="topbar-left">
+    <h1 style="font-size:1.25rem;font-family:var(--font-disp);font-weight:400">Funnel</h1>
+  </div>
+  <div class="topbar-right">
+    <button class="btn btn-ghost btn-sm" onclick="loadFunnel()" title="Vernieuwen">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+      Vernieuwen
+    </button>
+    <div id="topbar-client" style="display:flex;align-items:center;gap:.625rem;cursor:pointer" onclick="window.location.href='settings.html'">
+      <div class="avatar avatar-sm">?</div>
+      <span class="text-sm font-semi client-name" style="max-width:120px">—</span>
+    </div>
+  </div>
+</header>
+
+<div class="main-layout">
+  <div class="main-content">
+    <div class="page">
+
+      <div class="filters-bar">
+        <input type="search" class="form-input" id="search" placeholder="Zoek op naam, email of bedrijf…" style="width:280px;font-size:.8125rem;padding:.4rem .75rem" oninput="renderBoard()">
+        <select class="form-select" id="campaign-filter" style="width:auto;font-size:.8125rem;padding:.4rem .8rem" onchange="renderBoard()">
+          <option value="">Alle campagnes</option>
+        </select>
+        <select class="form-select" id="engagement-filter" style="width:auto;font-size:.8125rem;padding:.4rem .8rem" onchange="renderBoard()">
+          <option value="">Alle engagement</option>
+          <option value="hot">Hot (50+)</option>
+          <option value="warm">Warm (20-49)</option>
+          <option value="cold">Cold (&lt;20)</option>
+          <option value="zero">Geen engagement (0)</option>
+        </select>
+        <div style="flex:1"></div>
+        <span class="text-sm text-muted" id="total-count">—</span>
+      </div>
+
+      <div class="funnel-board" id="funnel-board">
+        <div style="text-align:center;padding:3rem;color:var(--muted);width:100%">Laden…</div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- Drawer -->
+<div class="drawer-overlay" id="drawer-overlay" onclick="closeDrawer()"></div>
+<div class="lead-drawer" id="lead-drawer">
+  <div id="drawer-content" style="padding:1.5rem"></div>
+</div>
+
+<div id="toast-container"></div>
+<script src="config.js"></script>
+<script src="app.js"></script>
+<script>
+var _allLeads = [];
+var _campaigns = [];
+var _draggedLeadId = null;
+
+var STAGES = [
+  { id: 'cold',    label: 'Cold',         desc: 'Eerste contact' },
+  { id: 'warm',    label: 'Warm',         desc: 'Engagement' },
+  { id: 'hot',     label: 'Hot',          desc: 'Reply / interesse' },
+  { id: 'meeting', label: 'Meeting',      desc: 'Afspraak gepland' },
+  { id: 'nurture', label: 'Nurture',      desc: '90 dagen cooldown' },
+  { id: 'lost',    label: 'Lost',         desc: 'Niet geïnteresseerd' },
+];
+
+(async function() {
+  try {
+    await requireAuth();
+    populateTopbar();
+    await loadCampaigns();
+    await loadFunnel();
+  } catch (e) { console.error(e); }
+})();
+
+async function loadCampaigns() {
+  try {
+    _campaigns = await api('/campaigns') || [];
+    var sel = document.getElementById('campaign-filter');
+    sel.innerHTML = '<option value="">Alle campagnes</option>' +
+      _campaigns.map(function(c) { return '<option value="' + c.id + '">' + escapeHtml(c.name || 'Unnamed') + '</option>'; }).join('');
+  } catch (e) { /* not critical */ }
+}
+
+async function loadFunnel() {
+  try {
+    _allLeads = await api('/leads?limit=1000') || [];
+    renderBoard();
+  } catch (e) {
+    document.getElementById('funnel-board').innerHTML =
+      '<div style="text-align:center;padding:3rem;color:var(--muted);width:100%">Kon leads niet laden: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/[&<>"']/g, function(c) {
+    return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c];
+  });
+}
+
+function engagementCategory(score) {
+  score = Number(score) || 0;
+  if (score >= 50) return 'hot';
+  if (score >= 20) return 'warm';
+  if (score > 0)   return 'cold';
+  return 'zero';
+}
+
+function filteredLeads() {
+  var search = (document.getElementById('search').value || '').toLowerCase();
+  var campFilter = document.getElementById('campaign-filter').value;
+  var engFilter = document.getElementById('engagement-filter').value;
+
+  return _allLeads.filter(function(l) {
+    if (search) {
+      var hay = ((l.email||'') + (l.first_name||'') + (l.last_name||'') + (l.company||'') + ((l.custom_fields && l.custom_fields.company) || '')).toLowerCase();
+      if (!hay.includes(search)) return false;
+    }
+    if (campFilter) {
+      var camp = (l.custom_fields && l.custom_fields.campaign_id) || l.campaign_id;
+      if (camp !== campFilter) return false;
+    }
+    if (engFilter && engagementCategory(l.engagement_score) !== engFilter) return false;
+    return true;
+  });
+}
+
+function renderBoard() {
+  var leads = filteredLeads();
+  var byStage = {};
+  STAGES.forEach(function(s) { byStage[s.id] = []; });
+
+  leads.forEach(function(l) {
+    var stage = l.funnel_stage || 'cold';
+    // Map unsubscribed to lost visually to keep 6 columns clean
+    if (stage === 'unsubscribed') stage = 'lost';
+    if (stage === 'won') stage = 'meeting';
+    if (byStage[stage]) byStage[stage].push(l);
+  });
+
+  document.getElementById('total-count').textContent = leads.length + ' leads zichtbaar';
+
+  var board = document.getElementById('funnel-board');
+  board.innerHTML = STAGES.map(function(s) {
+    var stageLeads = byStage[s.id] || [];
+    // Sort by engagement score desc within column
+    stageLeads.sort(function(a, b) { return (Number(b.engagement_score)||0) - (Number(a.engagement_score)||0); });
+
+    var cardsHtml = stageLeads.length === 0
+      ? '<div class="empty-col">Geen leads</div>'
+      : stageLeads.slice(0, 50).map(function(l) { return renderLeadCard(l); }).join('');
+
+    var more = stageLeads.length > 50 ? '<div class="empty-col">+' + (stageLeads.length - 50) + ' meer…</div>' : '';
+
+    return '<div class="funnel-col" data-stage="' + s.id + '" ' +
+      'ondragover="dragOver(event,\'' + s.id + '\')" ondragleave="dragLeave(event,\'' + s.id + '\')" ondrop="drop(event,\'' + s.id + '\')">' +
+      '<div class="funnel-col-header">' +
+        '<div class="funnel-col-title">' +
+          '<span class="stage-dot stage-' + s.id + '"></span>' +
+          s.label +
+        '</div>' +
+        '<span class="funnel-col-count">' + stageLeads.length + '</span>' +
+      '</div>' +
+      '<div class="funnel-col-body">' +
+        cardsHtml +
+        more +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function renderLeadCard(l) {
+  var name = [l.first_name, l.last_name].filter(Boolean).join(' ') || l.email || '—';
+  var initials = (l.email || '??').slice(0, 2).toUpperCase();
+  var company = l.company || (l.custom_fields && l.custom_fields.company) || '';
+  var score = Number(l.engagement_score) || 0;
+  var engCat = engagementCategory(score);
+
+  return '<div class="lead-card" draggable="true" data-lead-id="' + l.id + '" ' +
+    'ondragstart="dragStart(event,\'' + l.id + '\')" ondragend="dragEnd(event)" ' +
+    'onclick="openDrawer(\'' + l.id + '\')">' +
+    '<div class="lead-card-top">' +
+      '<div class="lead-card-avatar">' + escapeHtml(initials) + '</div>' +
+      '<div style="flex:1;min-width:0">' +
+        '<div class="lead-card-name">' + escapeHtml(name) + '</div>' +
+        '<div class="lead-card-email">' + escapeHtml(l.email || '') + '</div>' +
+      '</div>' +
+    '</div>' +
+    '<div class="lead-card-meta">' +
+      '<span class="lead-card-company">' + escapeHtml(company) + '</span>' +
+      '<span class="engagement-pill eng-' + engCat + '" title="Engagement score">' + score.toFixed(0) + '</span>' +
+    '</div>' +
+  '</div>';
+}
+
+// ── Drag and drop ─────────────────────────────────────────
+function dragStart(e, leadId) {
+  _draggedLeadId = leadId;
+  e.currentTarget.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', leadId);
+}
+
+function dragEnd(e) {
+  e.currentTarget.classList.remove('dragging');
+  document.querySelectorAll('.funnel-col').forEach(function(c) { c.classList.remove('drag-over'); });
+  _draggedLeadId = null;
+}
+
+function dragOver(e, stageId) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  e.currentTarget.classList.add('drag-over');
+}
+
+function dragLeave(e, stageId) {
+  // Only remove if actually leaving (not entering child)
+  if (e.currentTarget.contains(e.relatedTarget)) return;
+  e.currentTarget.classList.remove('drag-over');
+}
+
+async function drop(e, stageId) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag-over');
+  if (!_draggedLeadId) return;
+
+  var lead = _allLeads.find(function(l) { return l.id === _draggedLeadId; });
+  if (!lead) return;
+
+  var oldStage = lead.funnel_stage || 'cold';
+  if (oldStage === stageId) return;
+
+  // Optimistic UI update
+  lead.funnel_stage = stageId;
+  renderBoard();
+
+  try {
+    await api('/funnel/move-stage', {
+      method: 'POST',
+      body: JSON.stringify({ lead_id: _draggedLeadId, stage: stageId }),
+    });
+    toast('Lead verplaatst naar ' + stageId, 'success', 2000);
+  } catch (err) {
+    // Revert on error
+    lead.funnel_stage = oldStage;
+    renderBoard();
+    toast('Verplaatsen mislukt: ' + err.message, 'error');
+  }
+}
+
+// ── Detail drawer ─────────────────────────────────────────
+async function openDrawer(leadId) {
+  var l = _allLeads.find(function(x) { return x.id === leadId; });
+  if (!l) return;
+  var cf = l.custom_fields || {};
+  var name = [l.first_name, l.last_name].filter(Boolean).join(' ') || l.email;
+  var score = Number(l.engagement_score) || 0;
+  var scoreColor = score >= 50 ? '#f97316' : score >= 20 ? '#fbbf24' : '#94a3b8';
+
+  document.getElementById('drawer-content').innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1.5rem">' +
+      '<div>' +
+        '<h3 style="font-family:var(--font-disp);font-size:1.25rem;margin-bottom:.25rem">' + escapeHtml(name) + '</h3>' +
+        '<div class="text-sm text-muted">' + escapeHtml(l.email || '') + '</div>' +
+      '</div>' +
+      '<button class="btn-icon" onclick="closeDrawer()">' +
+        '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
+      '</button>' +
+    '</div>' +
+
+    '<div style="margin-bottom:1.5rem">' +
+      '<div style="display:flex;justify-content:space-between;margin-bottom:.5rem">' +
+        '<div style="font-size:.7rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">Engagement score</div>' +
+        '<div style="font-size:.8125rem;font-weight:700;color:' + scoreColor + '">' + score.toFixed(1) + ' / 100</div>' +
+      '</div>' +
+      '<div class="score-bar"><div class="score-bar-fill" style="width:' + Math.min(100, score) + '%;background:' + scoreColor + '"></div></div>' +
+      '<div class="text-xs text-muted" style="margin-top:.375rem">+5 open, +10 klik, +25 reply, -2/dag decay</div>' +
+    '</div>' +
+
+    '<div style="margin-bottom:1.5rem">' +
+      '<div style="font-size:.7rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:.75rem">Funnel stage</div>' +
+      '<div style="display:flex;gap:.375rem;flex-wrap:wrap">' +
+        STAGES.map(function(s) {
+          var active = (l.funnel_stage || 'cold') === s.id;
+          return '<button class="btn ' + (active ? 'btn-primary' : 'btn-ghost') + ' btn-sm" onclick="moveStage(\'' + l.id + '\',\'' + s.id + '\')">' +
+            '<span class="stage-dot stage-' + s.id + '" style="margin-right:.375rem"></span>' + s.label + '</button>';
+        }).join('') +
+      '</div>' +
+    '</div>' +
+
+    '<div style="margin-bottom:1.5rem">' +
+      '<div style="font-size:.7rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:.75rem">Lead info</div>' +
+      '<div class="enrichment-grid">' +
+        enrichItem('Bedrijf', l.company || cf.company) +
+        enrichItem('Functie', l.job_title || cf.contact_title) +
+        enrichItem('Domein', l.domain) +
+        enrichItem('Telefoon', l.phone) +
+        enrichItem('Land', l.country) +
+        enrichItem('Status', l.status) +
+        enrichItem('Geverifieerd', l.verified === true ? 'Ja' : l.verified === false ? 'Nee' : '—') +
+        enrichItem('Toegevoegd', formatDate(l.created_at)) +
+      '</div>' +
+    '</div>' +
+
+    (Object.keys(cf).length > 0 ? (
+      '<div style="margin-bottom:1.5rem">' +
+        '<div style="font-size:.7rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:.75rem">Heatr enrichment</div>' +
+        '<div class="enrichment-grid">' +
+          (cf.heatr_score ? enrichItem('Heatr score', cf.heatr_score) : '') +
+          (cf.icp_match ? enrichItem('ICP match', (parseFloat(cf.icp_match) * 100).toFixed(0) + '%') : '') +
+          (cf.industry ? enrichItem('Sector', cf.industry) : '') +
+          (cf.city ? enrichItem('Stad', cf.city) : '') +
+          (cf.website_score ? enrichItem('Website score', cf.website_score) : '') +
+          (cf.opener ? '<div class="enrichment-item" style="grid-column:1/-1"><div class="enrichment-label">Opener</div><div class="enrichment-value" style="font-style:italic">' + escapeHtml(cf.opener) + '</div></div>' : '') +
+        '</div>' +
+      '</div>'
+    ) : '') +
+
+    '<div>' +
+      '<div style="font-size:.7rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:.75rem">Acties</div>' +
+      '<div style="display:flex;gap:.5rem;flex-wrap:wrap">' +
+        '<a class="btn btn-ghost btn-sm" href="leads.html" style="text-decoration:none">Naar leads overzicht</a>' +
+        '<a class="btn btn-ghost btn-sm" href="unified-inbox.html" style="text-decoration:none">Replies bekijken</a>' +
+      '</div>' +
+    '</div>';
+
+  document.getElementById('lead-drawer').classList.add('open');
+  document.getElementById('drawer-overlay').classList.add('open');
+}
+
+function enrichItem(label, value) {
+  return '<div class="enrichment-item"><div class="enrichment-label">' + escapeHtml(label) + '</div><div class="enrichment-value">' + escapeHtml(value || '—') + '</div></div>';
+}
+
+function closeDrawer() {
+  document.getElementById('lead-drawer').classList.remove('open');
+  document.getElementById('drawer-overlay').classList.remove('open');
+}
+
+async function moveStage(leadId, stage) {
+  var lead = _allLeads.find(function(l) { return l.id === leadId; });
+  if (!lead) return;
+  var oldStage = lead.funnel_stage || 'cold';
+  if (oldStage === stage) return;
+
+  lead.funnel_stage = stage;
+  renderBoard();
+  openDrawer(leadId);
+
+  try {
+    await api('/funnel/move-stage', {
+      method: 'POST',
+      body: JSON.stringify({ lead_id: leadId, stage: stage }),
+    });
+    toast('Verplaatst naar ' + stage, 'success', 2000);
+  } catch (err) {
+    lead.funnel_stage = oldStage;
+    renderBoard();
+    openDrawer(leadId);
+    toast('Verplaatsen mislukt: ' + err.message, 'error');
+  }
+}
+
+async function populateTopbar() {
+  var u = await _supabase.auth.getUser();
+  var user = u.data && u.data.user;
+  if (user) {
+    var email = user.email || '';
+    var initials = email.slice(0,2).toUpperCase();
+    document.querySelectorAll('.avatar-sm').forEach(function(a) { a.textContent = initials; });
+    document.querySelectorAll('.client-name').forEach(function(n) { n.textContent = email.split('@')[0]; });
+    document.getElementById('sidebar-name').textContent = email.split('@')[0];
+  }
+}
+</script>
+</body>
+</html>
