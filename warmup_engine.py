@@ -197,6 +197,58 @@ def update_daily_sent(supabase: Client, inbox_id: str, new_count: int) -> int:
         return new_count
 
 
+def auto_reset_stale_counters(supabase: Client, inboxes: list[dict]) -> int:
+    """
+    Self-healing: if an inbox's `daily_sent > 0` but the last `sent` action
+    on that inbox was on a different calendar day (UTC), reset `daily_sent` to 0.
+
+    This recovers from missed daily_reset cron runs (Mac asleep overnight,
+    server downtime, etc.) without waiting for the next midnight.
+
+    Returns the number of inboxes that were reset.
+    """
+    reset_count = 0
+    today_iso = datetime.utcnow().strftime("%Y-%m-%d")
+    for inbox in inboxes:
+        current = int(inbox.get("daily_sent") or 0)
+        if current <= 0:
+            continue  # Nothing to reset
+        try:
+            # Find the most recent `sent` action for this inbox
+            resp = (
+                supabase.table("warmup_logs")
+                .select("timestamp")
+                .eq("inbox_id", inbox["id"])
+                .eq("action", "sent")
+                .order("timestamp", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if not resp.data:
+                # Counter > 0 but zero sends in log — stale. Reset.
+                supabase.table("inboxes").update({"daily_sent": 0}).eq("id", inbox["id"]).execute()
+                inbox["daily_sent"] = 0
+                reset_count += 1
+                logger.info("Auto-reset stale counter (no sends in log) for %s.", inbox.get("email"))
+                continue
+
+            last_sent_day = str(resp.data[0]["timestamp"])[:10]
+            if last_sent_day != today_iso:
+                supabase.table("inboxes").update({"daily_sent": 0}).eq("id", inbox["id"]).execute()
+                inbox["daily_sent"] = 0
+                reset_count += 1
+                logger.info(
+                    "Auto-reset stale counter for %s (last send on %s, today is %s).",
+                    inbox.get("email"), last_sent_day, today_iso,
+                )
+        except Exception as exc:
+            logger.warning("Self-healing reset failed for inbox %s: %s", inbox.get("email"), exc)
+
+    if reset_count:
+        logger.info("Self-healing: reset %d stale inbox counter(s).", reset_count)
+    return reset_count
+
+
 def update_warmup_target(supabase: Client, inbox_id: str, target: int) -> None:
     """
     Persist the recalculated daily_warmup_target back to the inboxes row.
@@ -715,6 +767,10 @@ def main() -> None:
     # Load active inboxes from Supabase and inject passwords from env
     raw_inboxes = load_active_inboxes(supabase)
     inboxes = inject_inbox_passwords(raw_inboxes)
+
+    # Self-healing: reset stale daily_sent counters before processing.
+    # Protects against missed daily_reset cron runs (laptop slept overnight).
+    auto_reset_stale_counters(supabase, inboxes)
 
     if dry_run:
         dry_run_preview(supabase, claude_client, warmup_network, inboxes)
