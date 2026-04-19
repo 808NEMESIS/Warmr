@@ -104,6 +104,39 @@ def _decode_token(token: str) -> dict:
         )
 
 
+# ── Client status cache ────────────────────────────────────────────────────
+# Short TTL cache for suspension/admin/plan lookups to avoid hammering the DB
+# on every authenticated request. 30 seconds is a good balance between
+# responsiveness to admin changes and performance.
+
+import time as _time
+_CLIENT_STATUS_CACHE: dict[str, tuple[dict, float]] = {}
+_CLIENT_STATUS_TTL = 30  # seconds
+
+
+def _get_client_status(client_id: str) -> dict:
+    """Fetch suspension/admin/plan from clients table, cached for 30s."""
+    now = _time.time()
+    cached = _CLIENT_STATUS_CACHE.get(client_id)
+    if cached and now - cached[1] < _CLIENT_STATUS_TTL:
+        return cached[0]
+    if not _SUPABASE_URL or not _SUPABASE_KEY:
+        return {}
+    try:
+        sb = create_client(_SUPABASE_URL, _SUPABASE_KEY)
+        resp = sb.table("clients").select("suspended, is_admin, plan, max_inboxes, max_domains").eq("id", client_id).limit(1).execute()
+        status = (resp.data or [{}])[0] or {}
+    except Exception:
+        status = {}
+    _CLIENT_STATUS_CACHE[client_id] = (status, now)
+    return status
+
+
+def invalidate_client_cache(client_id: str) -> None:
+    """Call this after updating clients.suspended/is_admin/plan to force re-fetch."""
+    _CLIENT_STATUS_CACHE.pop(client_id, None)
+
+
 async def get_current_client(
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(_bearer)],
 ) -> str:
@@ -112,6 +145,7 @@ async def get_current_client(
 
     Inject with `client_id: str = Depends(get_current_client)` on any protected route.
     Raises HTTP 401 for missing, malformed, or expired tokens.
+    Raises HTTP 403 if the client is suspended.
     """
     payload = _decode_token(credentials.credentials)
     client_id: str | None = payload.get("sub")
@@ -120,6 +154,15 @@ async def get_current_client(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token is missing the required 'sub' claim.",
         )
+
+    # Suspension check — cached for performance
+    client_status = _get_client_status(client_id)
+    if client_status.get("suspended"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account suspended. Contact support.",
+        )
+
     return client_id
 
 
@@ -129,9 +172,9 @@ async def require_admin(
     """
     FastAPI dependency: validate the JWT and assert the user is an admin.
 
-    Checks the `clients` table for `is_admin = true`.
+    Checks the cached client status for `is_admin = true`.
     Returns the client_id on success.
-    Raises HTTP 403 if the user is not an admin.
+    Raises HTTP 403 if the user is not an admin or is suspended.
     """
     payload = _decode_token(credentials.credentials)
     client_id: str | None = payload.get("sub")
@@ -141,6 +184,13 @@ async def require_admin(
     if not _SUPABASE_URL or not _SUPABASE_KEY:
         raise HTTPException(status_code=500, detail="Supabase not configured.")
 
+    status_row = _get_client_status(client_id)
+    if status_row.get("suspended"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account suspended.")
+    if status_row.get("is_admin"):
+        return client_id
+
+    # Not admin — fall through to DB check (handles the case where the cache is empty)
     sb = create_client(_SUPABASE_URL, _SUPABASE_KEY)
     resp = sb.table("clients").select("is_admin").eq("id", client_id).limit(1).execute()
     rows = resp.data or []

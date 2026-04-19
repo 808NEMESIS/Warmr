@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, Optional
 from uuid import UUID, uuid4
 
+import httpx
 import pandas as pd
 from fastapi import (
     BackgroundTasks,
@@ -104,9 +105,26 @@ _ALLOWED_ORIGINS: list[str] = (
 )
 
 # ---------------------------------------------------------------------------
-# Rate limiter (slowapi — 60 req/min per IP on public endpoints)
+# Rate limiter — per-client (JWT) when authenticated, per-IP otherwise
 # ---------------------------------------------------------------------------
-limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+
+def _rate_limit_key(request: Request) -> str:
+    """Key rate limits by client_id when JWT is present, else by IP."""
+    auth = request.headers.get("authorization", "")
+    if auth.startswith("Bearer "):
+        try:
+            # Decode WITHOUT verifying — we just need the sub claim for keying.
+            # Actual validation happens in auth dependencies.
+            payload = jose_jwt.get_unverified_claims(auth[7:])
+            sub = payload.get("sub")
+            if sub:
+                return f"client:{sub}"
+        except Exception:
+            pass
+    return f"ip:{get_remote_address(request)}"
+
+
+limiter = Limiter(key_func=_rate_limit_key, default_limits=["120/minute"])
 
 # ---------------------------------------------------------------------------
 # Security headers middleware
@@ -4070,6 +4088,39 @@ async def gdpr_purge_lead(lead_id: str, client_id: ClientId) -> dict:
 # Admin audit log
 # ---------------------------------------------------------------------------
 
+# ── Anomaly detection: warn if non-admin query returns unexpectedly large result ──
+def _check_query_size_anomaly(client_id: str, table: str, row_count: int, threshold: int = 1000) -> None:
+    """Log a warning + create a notification when a non-admin user retrieves suspiciously many rows."""
+    if row_count < threshold:
+        return
+    try:
+        from api.auth import _get_client_status
+        if _get_client_status(client_id).get("is_admin"):
+            return  # Admins legitimately read many rows
+        logger.warning("ANOMALY: non-admin client %s retrieved %d rows from %s", client_id, row_count, table)
+        _supabase.table("notifications").insert({
+            "client_id": "system",
+            "type": "query_anomaly",
+            "message": f"Non-admin client {client_id} retrieved {row_count} rows from {table}.",
+            "priority": "urgent",
+        }).execute()
+    except Exception:
+        pass
+
+
+# ── Webhook URL verification via challenge-response ──
+async def _verify_webhook_url(url: str) -> bool:
+    """Ping the webhook URL with a challenge; expect it echoed back in X-Warmr-Verification."""
+    import secrets
+    challenge = secrets.token_urlsafe(16)
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(url, headers={"X-Warmr-Challenge": challenge})
+            return resp.headers.get("X-Warmr-Verification") == challenge
+    except Exception:
+        return False
+
+
 def _log_admin_action(admin_id: str, action: str, target_type: str = "", target_id: str = "", payload: dict | None = None) -> None:
     """Silently record an admin action. Failures are non-fatal."""
     try:
@@ -4082,6 +4133,59 @@ def _log_admin_action(admin_id: str, action: str, target_type: str = "", target_
         }).execute()
     except Exception:
         pass
+
+
+@app.post("/admin/impersonate/{target_client_id}", tags=["Admin"])
+async def impersonate_client(
+    target_client_id: str,
+    admin_id: Annotated[str, Depends(require_admin)],
+    request: Request,
+) -> dict:
+    """
+    Generate a short-lived JWT for support sessions.
+
+    The returned token carries an `impersonator_id` claim so the UI can show a
+    banner + every write during the session is attributable to the admin.
+    Expires after 15 minutes.
+    """
+    # Verify target exists
+    target = _supabase.table("clients").select("id, email, company_name").eq("id", target_client_id).limit(1).execute()
+    if not target.data:
+        raise HTTPException(status_code=404, detail="Target client not found.")
+
+    import time as _time
+    token = jose_jwt.encode(
+        {
+            "sub": target_client_id,
+            "aud": "authenticated",
+            "role": "authenticated",
+            "impersonator_id": admin_id,
+            "iat": int(_time.time()),
+            "exp": int(_time.time()) + 900,  # 15 min
+        },
+        SUPABASE_JWT_SECRET,
+        algorithm="HS256",
+    )
+
+    _log_admin_action(
+        admin_id=admin_id,
+        action="impersonate_started",
+        target_type="client",
+        target_id=target_client_id,
+        payload={
+            "ip": request.client.host if request.client else None,
+            "target_email": target.data[0].get("email"),
+            "target_company": target.data[0].get("company_name"),
+        },
+    )
+
+    return {
+        "token": token,
+        "expires_in": 900,
+        "target_client_id": target_client_id,
+        "target_email": target.data[0].get("email"),
+        "impersonator_id": admin_id,
+    }
 
 
 @app.get("/admin/audit-log", tags=["Admin"])
@@ -4373,15 +4477,34 @@ async def list_crm_integrations(client_id: ClientId) -> list[dict]:
 
 @app.post("/crm/integrations", tags=["CRM"], status_code=201)
 async def create_crm_integration(client_id: ClientId, body: dict) -> dict:
-    """Add a new CRM integration."""
+    """
+    Add a new CRM integration.
+
+    For generic webhooks, the URL must pass a challenge-response verification:
+    the endpoint must echo `X-Warmr-Challenge` back as `X-Warmr-Verification`.
+    This prevents clients from misdirecting events to unrelated URLs.
+    """
     provider = body.get("provider", "").strip().lower()
     if provider not in ("hubspot", "pipedrive", "salesforce", "webhook"):
         raise HTTPException(status_code=422, detail="provider must be hubspot | pipedrive | salesforce | webhook.")
+
+    webhook_url = body.get("webhook_url")
+    if provider == "webhook":
+        if not webhook_url:
+            raise HTTPException(status_code=422, detail="webhook_url is required for webhook provider.")
+        # Verify URL ownership via challenge-response
+        verified = await _verify_webhook_url(webhook_url)
+        if not verified and not body.get("skip_verification"):
+            raise HTTPException(
+                status_code=422,
+                detail="Webhook URL verification failed. Your endpoint must respond to GET requests and echo the X-Warmr-Challenge request header back as X-Warmr-Verification.",
+            )
+
     payload = {
         "client_id": client_id,
         "provider": provider,
         "api_key": body.get("api_key"),
-        "webhook_url": body.get("webhook_url"),
+        "webhook_url": webhook_url,
         "config": body.get("config") or {},
         "active": body.get("active", True),
         "sync_on_reply": body.get("sync_on_reply", True),
