@@ -791,6 +791,93 @@ async def warmup_stats(client_id: ClientId):
 # Warmup history (per-inbox daily reputation trend)
 # ---------------------------------------------------------------------------
 
+@app.get("/warmup/inbox/{inbox_id}/forecast", tags=["Warmup"])
+async def warmup_inbox_forecast(inbox_id: str, client_id: ClientId) -> dict:
+    """
+    Linear regression over the last 14 days of daily reputation scores.
+
+    Returns:
+      - current_score, target_score (70 = campaign-ready threshold)
+      - slope_per_day: points gained per day on average (may be negative)
+      - days_until_ready: estimate of when score will reach 70
+      - confidence: r_squared of the regression
+      - verdict: "on_track" | "stalled" | "declining" | "ready"
+    """
+    _require_row("inboxes", inbox_id, client_id)
+    cutoff = _days_ago_utc(14)
+    logs = (
+        _supabase.table("warmup_logs")
+        .select("reputation_score_at_time, timestamp")
+        .eq("inbox_id", inbox_id)
+        .gte("timestamp", cutoff)
+        .order("timestamp")
+        .limit(5000)
+        .execute()
+    ).data or []
+
+    # Aggregate to daily average
+    daily: dict[str, list[float]] = {}
+    for log in logs:
+        day = (log.get("timestamp") or "")[:10]
+        score = log.get("reputation_score_at_time")
+        if not day or score is None:
+            continue
+        daily.setdefault(day, []).append(float(score))
+
+    points = sorted((day, sum(scores) / len(scores)) for day, scores in daily.items())
+
+    # Current score (from inboxes table, authoritative)
+    current = _supabase.table("inboxes").select("reputation_score").eq("id", inbox_id).single().execute().data
+    current_score = float((current or {}).get("reputation_score") or 50)
+    target = 70.0
+
+    if len(points) < 3:
+        return {
+            "current_score": current_score,
+            "target_score": target,
+            "slope_per_day": 0.0,
+            "days_until_ready": None,
+            "confidence": 0.0,
+            "verdict": "insufficient_data",
+            "data_points": len(points),
+        }
+
+    # Simple linear regression: x = day index, y = score
+    n = len(points)
+    xs = list(range(n))
+    ys = [p[1] for p in points]
+    mean_x = sum(xs) / n
+    mean_y = sum(ys) / n
+    num = sum((xs[i] - mean_x) * (ys[i] - mean_y) for i in range(n))
+    den = sum((xs[i] - mean_x) ** 2 for i in range(n)) or 1
+    slope = num / den
+    intercept = mean_y - slope * mean_x
+
+    ss_tot = sum((y - mean_y) ** 2 for y in ys) or 1
+    ss_res = sum((ys[i] - (intercept + slope * xs[i])) ** 2 for i in range(n))
+    r_squared = max(0.0, 1 - ss_res / ss_tot)
+
+    # Days until reaching 70
+    days_until_ready: float | None = None
+    if current_score >= target:
+        verdict = "ready"
+    elif slope <= 0.05:
+        verdict = "stalled" if slope >= -0.05 else "declining"
+    else:
+        days_until_ready = (target - current_score) / slope
+        verdict = "on_track"
+
+    return {
+        "current_score": round(current_score, 1),
+        "target_score": target,
+        "slope_per_day": round(slope, 3),
+        "days_until_ready": round(days_until_ready, 1) if days_until_ready is not None else None,
+        "confidence": round(r_squared, 2),
+        "verdict": verdict,
+        "data_points": n,
+    }
+
+
 @app.get("/warmup/inbox/{inbox_id}/history", tags=["Warmup"])
 async def warmup_inbox_history(inbox_id: str, client_id: ClientId, days: int = Query(default=30)) -> dict:
     """Per-inbox daily reputation, volume, and spam stats over time."""
@@ -4040,6 +4127,101 @@ async def funnel_templates(
 # ---------------------------------------------------------------------------
 # GDPR — data export & right to erasure
 # ---------------------------------------------------------------------------
+
+@app.get("/leads/priority", tags=["Leads"])
+async def leads_priority(
+    client_id: ClientId,
+    limit: int = Query(default=50, ge=1, le=500),
+) -> list[dict]:
+    """
+    Leads ranked by a composite priority score combining:
+      - engagement (0-100): recent interaction intensity (opens, clicks, replies)
+      - heatr_score (0-100): ICP fit from Heatr enrichment
+      - funnel_stage: hot > warm > cold > nurture > lost
+      - recency: boost for recent activity, penalty for staleness
+
+    Returns top N leads with a `priority` 0-100 + reason breakdown so the UI
+    can explain WHY a lead is at the top.
+    """
+    resp = (
+        _supabase.table("leads")
+        .select("id, email, first_name, last_name, company, domain, status, funnel_stage, engagement_score, engagement_updated_at, custom_fields, created_at")
+        .eq("client_id", client_id)
+        .in_("funnel_stage", ["cold", "warm", "hot", "meeting"])
+        .limit(1000)
+        .execute()
+    )
+    leads = resp.data or []
+
+    stage_weight = {"cold": 20, "warm": 50, "hot": 80, "meeting": 100}
+    now = datetime.now(timezone.utc)
+
+    scored = []
+    for lead in leads:
+        cf = lead.get("custom_fields") or {}
+
+        engagement = float(lead.get("engagement_score") or 0)
+        heatr = float(cf.get("heatr_score") or 0)
+        stage_score = stage_weight.get(lead.get("funnel_stage") or "cold", 20)
+
+        # Recency: 0-100 based on days since last engagement
+        last = lead.get("engagement_updated_at") or lead.get("created_at")
+        recency = 50
+        if last:
+            try:
+                last_dt = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+                days = (now - last_dt).days
+                if days <= 1:
+                    recency = 100
+                elif days <= 3:
+                    recency = 80
+                elif days <= 7:
+                    recency = 60
+                elif days <= 14:
+                    recency = 40
+                elif days <= 30:
+                    recency = 20
+                else:
+                    recency = 0
+            except Exception:
+                pass
+
+        # Weighted composite: engagement = 40%, funnel stage = 30%, heatr = 20%, recency = 10%
+        priority = (
+            engagement * 0.40
+            + stage_score * 0.30
+            + heatr * 0.20
+            + recency * 0.10
+        )
+
+        # Explain what drove the score
+        reasons: list[str] = []
+        if engagement >= 50:
+            reasons.append(f"hot engagement ({engagement:.0f})")
+        if lead.get("funnel_stage") == "hot":
+            reasons.append("in hot stage")
+        elif lead.get("funnel_stage") == "meeting":
+            reasons.append("meeting stage")
+        if heatr >= 70:
+            reasons.append(f"strong ICP fit ({heatr:.0f})")
+        if recency >= 80:
+            reasons.append("recently active")
+
+        scored.append({
+            "id": lead["id"],
+            "email": lead.get("email"),
+            "name": f"{lead.get('first_name') or ''} {lead.get('last_name') or ''}".strip() or lead.get("email"),
+            "company": lead.get("company") or cf.get("company") or "",
+            "funnel_stage": lead.get("funnel_stage"),
+            "engagement_score": engagement,
+            "heatr_score": heatr,
+            "priority": round(priority, 1),
+            "reasons": reasons or ["baseline"],
+        })
+
+    scored.sort(key=lambda x: x["priority"], reverse=True)
+    return scored[:limit]
+
 
 @app.get("/compliance/overview", tags=["GDPR"])
 async def compliance_overview(client_id: ClientId) -> dict:
