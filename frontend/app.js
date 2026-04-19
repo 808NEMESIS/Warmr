@@ -659,6 +659,43 @@ function showShortcutHelp() {
   document.body.appendChild(overlay);
 }
 
+// ── Impersonation banner ─────────────────────────────────────────────────────
+
+function _decodeJWT(token) {
+  try {
+    var parts = token.split('.');
+    if (parts.length !== 3) return null;
+    var payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    while (payload.length % 4) payload += '=';
+    return JSON.parse(atob(payload));
+  } catch { return null; }
+}
+
+async function _checkImpersonationBanner() {
+  var session = await getSession().catch(function() { return null; });
+  if (!session || !session.access_token) return;
+  var claims = _decodeJWT(session.access_token);
+  if (!claims || !claims.impersonator_id) return;
+
+  var existing = document.getElementById('imp-banner');
+  if (existing) return;
+
+  var banner = document.createElement('div');
+  banner.id = 'imp-banner';
+  banner.style.cssText =
+    'position:fixed;top:0;left:0;right:0;z-index:9000;' +
+    'background:#dc2626;color:#fff;padding:.4rem .75rem;' +
+    'font-size:.8rem;font-weight:600;text-align:center;' +
+    'box-shadow:0 2px 8px rgba(0,0,0,.2);';
+  banner.innerHTML =
+    '\u26A0\uFE0F Impersonation actief \u2014 je bekijkt data als client ' +
+    '<span style="font-family:monospace">' + (claims.sub || '').slice(0, 8) + '\u2026</span> ' +
+    '(admin: <span style="font-family:monospace">' + String(claims.impersonator_id).slice(0, 8) + '\u2026</span>) ' +
+    '<button onclick="logout()" style="background:rgba(0,0,0,.3);border:none;color:#fff;padding:.15rem .6rem;border-radius:4px;cursor:pointer;margin-left:.5rem;font-size:.7rem">Uitloggen</button>';
+  document.body.insertBefore(banner, document.body.firstChild);
+  document.body.style.paddingTop = '32px';
+}
+
 // Auto-init sidebar/logo/switcher when DOM is ready
 document.addEventListener('DOMContentLoaded', function() {
   _initTheme();
@@ -670,6 +707,7 @@ document.addEventListener('DOMContentLoaded', function() {
   injectSuppressionLink();
   injectThemeToggle();
   initMobileSidebar();
+  _checkImpersonationBanner();
   document.addEventListener('keydown', _handleKey);
   // Start polling after auth is confirmed (delayed to not race with login flow)
   setTimeout(function() {

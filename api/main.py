@@ -4135,6 +4135,44 @@ def _log_admin_action(admin_id: str, action: str, target_type: str = "", target_
         pass
 
 
+@app.post("/auth/force-logout", tags=["Auth"])
+async def force_logout(client_id: ClientId) -> dict:
+    """
+    Invalidate all active sessions for the authenticated client.
+
+    Increments `clients.session_version` AND calls Supabase admin.signOut()
+    which revokes all refresh tokens. Existing access tokens remain valid
+    until their ~1h expiry but cannot be refreshed.
+    """
+    import httpx as _httpx
+    # Bump session_version (client-side tracking)
+    try:
+        row = _supabase.table("clients").select("session_version").eq("id", client_id).limit(1).execute()
+        current = int((row.data or [{}])[0].get("session_version") or 1)
+        _supabase.table("clients").update({"session_version": current + 1}).eq("id", client_id).execute()
+    except Exception as exc:
+        logger.warning("Failed to bump session_version for %s: %s", client_id, exc)
+
+    # Invalidate cache so subsequent checks pick up the new version
+    try:
+        from api.auth import invalidate_client_cache
+        invalidate_client_cache(client_id)
+    except Exception:
+        pass
+
+    # Call Supabase admin signout to revoke refresh tokens
+    try:
+        _httpx.post(
+            f"{SUPABASE_URL}/auth/v1/admin/users/{client_id}/logout",
+            headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+            timeout=5,
+        )
+    except Exception as exc:
+        logger.warning("Supabase admin signout failed for %s: %s", client_id, exc)
+
+    return {"ok": True, "message": "All sessions revoked. Existing access tokens expire in ~1 hour."}
+
+
 @app.post("/admin/impersonate/{target_client_id}", tags=["Admin"])
 async def impersonate_client(
     target_client_id: str,
@@ -4867,13 +4905,17 @@ def generate_unsubscribe_url(client_id: str, lead_id: str, lead_email: str, camp
 @app.get("/unsubscribe/{token}", tags=["Unsubscribe"], include_in_schema=False)
 async def unsubscribe_page(token: str) -> Response:
     """Hosted unsubscribe confirmation page (public, no auth)."""
-    # Look up the token
     resp = _supabase.table("unsubscribe_tokens").select("*").eq("token", token).limit(1).execute()
     if not resp.data:
         html = _unsub_html("Ongeldige link", "Deze uitschrijflink is niet geldig of al verlopen.", False)
         return Response(content=html, media_type="text/html")
 
     row = resp.data[0]
+    # Block access when owning client is suspended (prevents data leakage)
+    if _client_is_suspended(row.get("client_id", "")):
+        html = _unsub_html("Niet beschikbaar", "Deze uitschrijflink is tijdelijk niet actief.", False)
+        return Response(content=html, media_type="text/html", status_code=410)
+
     if row.get("used"):
         html = _unsub_html("Al uitgeschreven", f"<strong>{html_mod.escape(row['lead_email'])}</strong> is al uitgeschreven.", False)
         return Response(content=html, media_type="text/html")
@@ -4969,6 +5011,15 @@ def _verify_tracking_token(token: str) -> tuple[str, str, str, str] | None:
         return None
 
 
+def _client_is_suspended(client_id: str) -> bool:
+    """Quick cached check — used by public endpoints to block suspended tenants."""
+    try:
+        from api.auth import _get_client_status
+        return bool(_get_client_status(client_id).get("suspended"))
+    except Exception:
+        return False
+
+
 @app.get("/t/{token}.gif", tags=["Tracking"], include_in_schema=False)
 async def track_open(token: str, request: Request) -> Response:
     """Record an email open event and return a 1x1 transparent GIF."""
@@ -4976,6 +5027,9 @@ async def track_open(token: str, request: Request) -> Response:
         verified = _verify_tracking_token(token)
         if verified:
             client_id, campaign_id, lead_id, lead_email = verified
+            # Suspended clients' tracking links no longer emit events
+            if _client_is_suspended(client_id):
+                return Response(content=_TRACKING_PIXEL, media_type="image/gif", status_code=410)
             _supabase.table("email_tracking").insert({
                 "client_id": client_id,
                 "campaign_id": campaign_id,
@@ -5017,6 +5071,9 @@ async def track_click(token: str, url: str = Query(...), request: Request = None
         verified = _verify_tracking_token(token)
         if verified:
             client_id, campaign_id, lead_id, lead_email = verified
+            # Suspended clients: do not track, but still redirect (user gets what they clicked)
+            if _client_is_suspended(client_id):
+                return RedirectResponse(url=url, status_code=302)
             _supabase.table("email_tracking").insert({
                 "client_id": client_id,
                 "campaign_id": campaign_id,

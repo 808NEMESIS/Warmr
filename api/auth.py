@@ -115,7 +115,7 @@ _CLIENT_STATUS_TTL = 30  # seconds
 
 
 def _get_client_status(client_id: str) -> dict:
-    """Fetch suspension/admin/plan from clients table, cached for 30s."""
+    """Fetch suspension/admin/plan/session_version from clients table, cached for 30s."""
     now = _time.time()
     cached = _CLIENT_STATUS_CACHE.get(client_id)
     if cached and now - cached[1] < _CLIENT_STATUS_TTL:
@@ -124,7 +124,9 @@ def _get_client_status(client_id: str) -> dict:
         return {}
     try:
         sb = create_client(_SUPABASE_URL, _SUPABASE_KEY)
-        resp = sb.table("clients").select("suspended, is_admin, plan, max_inboxes, max_domains").eq("id", client_id).limit(1).execute()
+        resp = sb.table("clients").select(
+            "suspended, is_admin, plan, max_inboxes, max_domains, session_version"
+        ).eq("id", client_id).limit(1).execute()
         status = (resp.data or [{}])[0] or {}
     except Exception:
         status = {}
@@ -143,9 +145,8 @@ async def get_current_client(
     """
     FastAPI dependency: validate a Supabase JWT and return the client_id (user UUID).
 
-    Inject with `client_id: str = Depends(get_current_client)` on any protected route.
-    Raises HTTP 401 for missing, malformed, or expired tokens.
-    Raises HTTP 403 if the client is suspended.
+    Also records the request-scoped impersonator_id (if present) for audit
+    annotation via `get_current_impersonator()`.
     """
     payload = _decode_token(credentials.credentials)
     client_id: str | None = payload.get("sub")
@@ -163,7 +164,54 @@ async def get_current_client(
             detail="Account suspended. Contact support.",
         )
 
+    # Store impersonator_id on a request-context variable so endpoints can log it.
+    # The variable lives in contextvars — survives across async boundaries.
+    impersonator_id = payload.get("impersonator_id")
+    if impersonator_id:
+        _IMPERSONATOR_CTX.set(impersonator_id)
+    else:
+        _IMPERSONATOR_CTX.set(None)
+
     return client_id
+
+
+# ── Context variable for tracking impersonation in audit writes ─────────────
+import contextvars
+_IMPERSONATOR_CTX: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "warmr_impersonator_id", default=None
+)
+
+
+def get_current_impersonator() -> str | None:
+    """Return admin_id if this request is running in an impersonation session, else None."""
+    return _IMPERSONATOR_CTX.get()
+
+
+async def get_auth_context(
+    credentials: Annotated[HTTPAuthorizationCredentials, Depends(_bearer)],
+) -> dict:
+    """
+    FastAPI dependency returning the full auth context:
+    { "client_id": str, "impersonator_id": str | None, "is_admin": bool }
+
+    Use on endpoints that need the full context (e.g. to annotate writes with
+    impersonator_id or to conditionally allow admin-only actions).
+    """
+    payload = _decode_token(credentials.credentials)
+    client_id = payload.get("sub")
+    if not client_id:
+        raise HTTPException(status_code=401, detail="Missing sub claim.")
+    status_row = _get_client_status(client_id)
+    if status_row.get("suspended"):
+        raise HTTPException(status_code=403, detail="Account suspended.")
+    imp = payload.get("impersonator_id")
+    if imp:
+        _IMPERSONATOR_CTX.set(imp)
+    return {
+        "client_id": client_id,
+        "impersonator_id": imp,
+        "is_admin": bool(status_row.get("is_admin")),
+    }
 
 
 async def require_admin(

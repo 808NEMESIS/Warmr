@@ -112,7 +112,7 @@ async def _get_api_key_context(
     sb = _sb()
     resp = (
         sb.table("api_keys")
-        .select("id, client_id, permissions")
+        .select("id, client_id, permissions, scopes, revoked, expires_at")
         .eq("key_hash", key_hash)
         .limit(1)
         .execute()
@@ -125,17 +125,78 @@ async def _get_api_key_context(
         )
 
     key_row = rows[0]
+
+    # Check revocation + expiry
+    if key_row.get("revoked"):
+        raise HTTPException(status_code=401, detail="API key has been revoked.")
+    if key_row.get("expires_at"):
+        from datetime import datetime as _dt, timezone as _tz
+        try:
+            exp = _dt.fromisoformat(str(key_row["expires_at"]).replace("Z", "+00:00"))
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=_tz.utc)
+            if exp < _dt.now(_tz.utc):
+                raise HTTPException(status_code=401, detail="API key has expired.")
+        except (ValueError, TypeError):
+            pass
+
+    # Suspended client → reject
+    try:
+        client_row = sb.table("clients").select("suspended").eq("id", key_row["client_id"]).limit(1).execute()
+        if client_row.data and client_row.data[0].get("suspended"):
+            raise HTTPException(status_code=403, detail="Client account suspended.")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
     # Fire-and-forget last_used_at update (best effort)
     try:
         sb.table("api_keys").update({"last_used_at": _NOW_UTC()}).eq("id", key_row["id"]).execute()
     except Exception:
         pass
 
+    # Merge legacy permissions + new scopes
+    merged_scopes = list((key_row.get("scopes") or [])) + list((key_row.get("permissions") or []))
+
     return _ApiKeyContext(
         client_id=key_row["client_id"],
         key_id=key_row["id"],
-        permissions=key_row.get("permissions") or [],
+        permissions=merged_scopes,
     )
+
+
+# ── Scope enforcement helper ───────────────────────────────────────────────
+def require_scope(required_scope: str):
+    """
+    Dependency factory: verify the API key has the required scope.
+
+    Usage:
+        @public_router.post("/leads", dependencies=[Depends(require_scope("write:leads"))])
+        async def create_lead(...): ...
+
+    Supports wildcard scopes: "read:all" grants access to any "read:*" endpoint.
+    """
+    from fastapi import Depends
+
+    def checker(ctx: ApiCtx) -> "_ApiKeyContext":
+        scopes = set(ctx.permissions or [])
+        # Admin / wildcard scope passes everything
+        if "admin" in scopes or "*" in scopes:
+            return ctx
+        # Exact match
+        if required_scope in scopes:
+            return ctx
+        # Category wildcard: required "read:leads" matches scope "read:all"
+        category = required_scope.split(":", 1)[0] if ":" in required_scope else required_scope
+        if f"{category}:all" in scopes:
+            return ctx
+        raise HTTPException(
+            status_code=403,
+            detail=f"API key missing required scope: {required_scope}",
+        )
+
+    return Depends(checker)
 
 
 ApiCtx = Annotated[_ApiKeyContext, Depends(_get_api_key_context)]

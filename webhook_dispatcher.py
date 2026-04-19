@@ -151,6 +151,70 @@ def deliver(
         return False, 0, str(exc)[:500]
 
 
+# ── Circuit breaker ────────────────────────────────────────────────────────
+CIRCUIT_BREAKER_THRESHOLD = 10  # consecutive failures before auto-disable
+CIRCUIT_BREAKER_WINDOW_MINUTES = 60
+
+
+def _count_recent_failures(sb: Client, webhook_id: str) -> int:
+    """Count consecutive webhook_logs failures for this webhook within the window."""
+    from datetime import datetime, timedelta, timezone
+    since = (datetime.now(timezone.utc) - timedelta(minutes=CIRCUIT_BREAKER_WINDOW_MINUTES)).isoformat()
+    try:
+        resp = (
+            sb.table("webhook_logs")
+            .select("success, timestamp")
+            .eq("webhook_id", webhook_id)
+            .gte("timestamp", since)
+            .order("timestamp", desc=True)
+            .limit(CIRCUIT_BREAKER_THRESHOLD)
+            .execute()
+        )
+        rows = resp.data or []
+        # Count leading consecutive failures (most recent first)
+        count = 0
+        for row in rows:
+            if row.get("success"):
+                break
+            count += 1
+        return count
+    except Exception:
+        return 0
+
+
+def _trip_circuit_breaker(sb: Client, webhook: dict) -> None:
+    """Disable the webhook and create an urgent notification for the client."""
+    try:
+        sb.table("webhooks").update({
+            "active": False,
+            "disabled_reason": "circuit_breaker",
+            "disabled_at": _now_utc(),
+        }).eq("id", webhook["id"]).execute()
+    except Exception as exc:
+        logger.error("Failed to disable webhook %s: %s", webhook["id"], exc)
+
+    try:
+        sb.table("notifications").insert({
+            "client_id": webhook.get("client_id", ""),
+            "type": "webhook_auto_disabled",
+            "entity_id": webhook["id"],
+            "entity_type": "webhook",
+            "message": (
+                f"Webhook {webhook.get('url', '')[:60]} is automatisch uitgeschakeld na "
+                f"{CIRCUIT_BREAKER_THRESHOLD} opeenvolgende mislukkingen. "
+                "Controleer je endpoint en herstart handmatig."
+            ),
+            "priority": "urgent",
+        }).execute()
+    except Exception:
+        pass
+
+    logger.warning(
+        "Circuit breaker TRIPPED for webhook %s (%s) — auto-disabled after %d consecutive failures",
+        webhook["id"], webhook.get("url", "")[:60], CIRCUIT_BREAKER_THRESHOLD,
+    )
+
+
 def _log_attempt(
     sb: Client,
     webhook: dict,
@@ -209,11 +273,21 @@ def process_event(sb: Client, event: dict) -> None:
         return
 
     for webhook in webhooks:
+        # Include client_id in the webhook dict so the circuit breaker notification
+        # has the right tenant. It's not always selected above.
+        webhook = {**webhook, "client_id": client_id}
+
         attempt_count = 1
         success, status_code, body_snippet = deliver(webhook, event_type, payload, attempt_count)
         next_retry = _retry_at(attempt_count) if not success else None
 
         _log_attempt(sb, webhook, event, success, status_code, body_snippet, attempt_count, next_retry)
+
+        # Circuit breaker: after each delivery, check consecutive failures
+        if not success:
+            fails = _count_recent_failures(sb, webhook["id"])
+            if fails >= CIRCUIT_BREAKER_THRESHOLD:
+                _trip_circuit_breaker(sb, webhook)
 
         if success:
             logger.info(
