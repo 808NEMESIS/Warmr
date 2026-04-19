@@ -75,6 +75,12 @@ from api.models import (
 # Logging
 # ---------------------------------------------------------------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+# Optional: switch to JSON logging when WARMR_JSON_LOGS=1
+try:
+    from utils.structured_logging import setup_json_logging, CorrelationMiddleware
+    setup_json_logging()
+except Exception:
+    CorrelationMiddleware = None  # type: ignore
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -198,6 +204,14 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Middleware — order matters: outermost runs first on request, last on response
 app.add_middleware(RequestSizeLimitMiddleware)
+if CorrelationMiddleware is not None:
+    app.add_middleware(CorrelationMiddleware)
+
+try:
+    from utils.metrics import MetricsMiddleware as _MetricsMiddleware, metrics_text as _metrics_text
+    app.add_middleware(_MetricsMiddleware)
+except Exception:
+    _metrics_text = None  # type: ignore
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(
@@ -216,6 +230,14 @@ app.include_router(apikey_router)
 async def health_check() -> dict:
     """Public health probe — no auth required."""
     return {"status": "ok", "version": "1.0.0"}
+
+
+@app.get("/metrics", tags=["System"], include_in_schema=False)
+async def prometheus_metrics() -> Response:
+    """Prometheus-scrapable metrics. Public — use network policy to restrict."""
+    if _metrics_text is None:
+        return Response(content="# metrics module unavailable\n", media_type="text/plain")
+    return Response(content=_metrics_text(), media_type="text/plain; version=0.0.4")
 
 
 # ---------------------------------------------------------------------------
@@ -4019,6 +4041,63 @@ async def funnel_templates(
 # GDPR — data export & right to erasure
 # ---------------------------------------------------------------------------
 
+@app.get("/compliance/overview", tags=["GDPR"])
+async def compliance_overview(client_id: ClientId) -> dict:
+    """
+    Self-service compliance view for the authenticated client.
+
+    Returns what data Warmr holds about this client + links to export/delete
+    endpoints + a summary of admin actions on their account in the last 30 days.
+    """
+    # Count our rows per table
+    def _count(table: str, column: str = "client_id") -> int:
+        try:
+            r = _supabase.table(table).select("id", count="exact").eq(column, client_id).execute()
+            return r.count or 0
+        except Exception:
+            return 0
+
+    counts = {
+        "leads": _count("leads"),
+        "inboxes": _count("inboxes"),
+        "domains": _count("domains"),
+        "campaigns": _count("campaigns"),
+        "email_events": _count("email_events"),
+        "email_tracking": _count("email_tracking"),
+        "suppression_list": _count("suppression_list"),
+        "notifications": _count("notifications"),
+        "reply_inbox": _count("reply_inbox"),
+    }
+
+    # Admin actions touching this client in last 30 days
+    cutoff = _days_ago_utc(30)
+    admin_acts = (
+        _supabase.table("admin_audit_log")
+        .select("admin_id, action, target_type, target_id, created_at")
+        .eq("target_id", client_id)
+        .gte("created_at", cutoff)
+        .order("created_at", desc=True)
+        .limit(50)
+        .execute()
+    )
+
+    return {
+        "client_id": client_id,
+        "data_held_by_warmr": counts,
+        "total_rows": sum(counts.values()),
+        "admin_actions_last_30d": admin_acts.data or [],
+        "retention_policy": "Leads + events retained while account is active. Deleted on request (Article 17) or within 30 days of account closure.",
+        "rights": {
+            "access": "/leads/{lead_id}/export-gdpr  (HMAC-signed bundle per lead)",
+            "erasure": "/leads/{lead_id}/purge  (permanent delete, irreversible)",
+            "rectification": "PATCH via /leads/{lead_id} or contact support",
+            "portability": "Export endpoint returns machine-readable JSON",
+            "objection": "POST /suppression  (add email to do-not-contact list)",
+        },
+        "data_processor_contact": "info@aeryssolution.nl",
+    }
+
+
 @app.get("/leads/{lead_id}/export-gdpr", tags=["GDPR"])
 async def gdpr_export_lead(lead_id: str, client_id: ClientId) -> dict:
     """Export all data Warmr has on a single lead (GDPR Article 15)."""
@@ -4038,7 +4117,27 @@ async def gdpr_export_lead(lead_id: str, client_id: ClientId) -> dict:
         "exported_at": _now_utc(),
         "exported_by": client_id,
     }
-    return bundle
+
+    # HMAC signature over the canonical JSON representation. Consumer can verify
+    # integrity + exact timestamp by recomputing HMAC-SHA256(secret, canonical_body).
+    import hashlib, hmac, json as _json
+    canonical = _json.dumps(bundle, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    secret = os.getenv("WARMR_API_TOKEN", "fallback-secret").encode("utf-8")
+    signature = hmac.new(secret, canonical, hashlib.sha256).hexdigest()
+    bundle_hash = hashlib.sha256(canonical).hexdigest()
+
+    return {
+        **bundle,
+        "_integrity": {
+            "algorithm": "HMAC-SHA256",
+            "signature": signature,
+            "content_hash_sha256": bundle_hash,
+            "verify_instructions": (
+                "To verify: recompute HMAC-SHA256(server_secret, canonical_json) over "
+                "the export with the _integrity field removed. Match against signature."
+            ),
+        },
+    }
 
 
 @app.delete("/leads/{lead_id}/purge", tags=["GDPR"], status_code=200)
@@ -4135,6 +4234,26 @@ def _log_admin_action(admin_id: str, action: str, target_type: str = "", target_
         pass
 
 
+@app.post("/auth/check-password", tags=["Auth"])
+@limiter.limit("30/minute")
+async def check_password_endpoint(request: Request, body: dict) -> dict:
+    """
+    Validate a password against policy rules (length, complexity, common list).
+
+    Called by the signup/password-change UI to give real-time feedback.
+    Does NOT authenticate — only validates the string. Safe to call public.
+    """
+    from utils.password_policy import check_password, strength_score
+    password = body.get("password", "")
+    email = body.get("email")
+    ok, errors = check_password(password, email)
+    return {
+        "valid": ok,
+        "errors": errors,
+        "strength": strength_score(password),
+    }
+
+
 @app.post("/auth/force-logout", tags=["Auth"])
 async def force_logout(client_id: ClientId) -> dict:
     """
@@ -4224,6 +4343,66 @@ async def impersonate_client(
         "target_email": target.data[0].get("email"),
         "impersonator_id": admin_id,
     }
+
+
+@app.get("/admin/audit-log/export", tags=["Admin"])
+async def admin_audit_log_export(
+    admin_id: Annotated[str, Depends(require_admin)],
+    days: int = Query(default=30, ge=1, le=365),
+    format: str = Query(default="json", regex="^(json|csv)$"),
+) -> Response:
+    """Export admin audit log for compliance / SOC 2 evidence."""
+    cutoff = _days_ago_utc(days)
+    resp = (
+        _supabase.table("admin_audit_log")
+        .select("*")
+        .gte("created_at", cutoff)
+        .order("created_at", desc=True)
+        .limit(10000)
+        .execute()
+    )
+    rows = resp.data or []
+
+    if format == "csv":
+        out = io.StringIO()
+        if rows:
+            import csv
+            w = csv.DictWriter(out, fieldnames=list(rows[0].keys()))
+            w.writeheader()
+            for r in rows:
+                w.writerow({k: (str(v) if not isinstance(v, (str, int, float, bool)) else v) for k, v in r.items()})
+        _log_admin_action(admin_id, "audit_log_export", "audit", "", {"days": days, "rows": len(rows), "format": "csv"})
+        return Response(
+            content=out.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="warmr-audit-{days}d.csv"'},
+        )
+
+    _log_admin_action(admin_id, "audit_log_export", "audit", "", {"days": days, "rows": len(rows), "format": "json"})
+    return Response(
+        content=__import__("json").dumps({"rows": rows, "count": len(rows), "days": days}, default=str),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="warmr-audit-{days}d.json"'},
+    )
+
+
+@app.post("/admin/audit-log/prune", tags=["Admin"])
+async def admin_audit_log_prune(
+    admin_id: Annotated[str, Depends(require_admin)],
+    body: dict,
+) -> dict:
+    """
+    Prune audit log rows older than X days. SOC 2 typically requires 7-year retention.
+    Default here is 90 days for self-hosted. Exports recommended before pruning.
+    """
+    days = int(body.get("retain_days", 2555))  # 7 years default
+    if days < 90:
+        raise HTTPException(status_code=422, detail="retain_days must be >= 90 for compliance safety.")
+    cutoff = _days_ago_utc(days)
+    resp = _supabase.table("admin_audit_log").delete().lt("created_at", cutoff).execute()
+    deleted = len(resp.data or [])
+    _log_admin_action(admin_id, "audit_log_prune", "audit", "", {"retain_days": days, "deleted": deleted})
+    return {"deleted": deleted, "retained_days": days}
 
 
 @app.get("/admin/audit-log", tags=["Admin"])
