@@ -45,15 +45,27 @@ def _find_closing_brace(text: str, open_pos: int) -> int:
     Find the position of the closing brace matching the opening brace at open_pos.
 
     Returns the index of '}', or -1 if no match found (malformed spintax).
+    Skips `{{...}}` variable markers so they survive spintax processing intact.
     """
     depth = 0
-    for i in range(open_pos, len(text)):
+    i = open_pos
+    while i < len(text):
+        # Skip `{{...}}` variable markers entirely — don't count their braces
+        if text[i] == "{" and i + 1 < len(text) and text[i + 1] == "{":
+            end = text.find("}}", i + 2)
+            if end == -1:
+                # Unmatched {{ — skip just this char to avoid infinite loop
+                i += 1
+                continue
+            i = end + 2
+            continue
         if text[i] == "{":
             depth += 1
         elif text[i] == "}":
             depth -= 1
             if depth == 0:
                 return i
+        i += 1
     return -1
 
 
@@ -97,6 +109,18 @@ def _apply_spintax(text: str, rng: random.Random) -> str:
     i = 0
 
     while i < len(text):
+        # Preserve `{{variable}}` markers — let them pass through untouched
+        if text[i] == "{" and i + 1 < len(text) and text[i + 1] == "{":
+            end = text.find("}}", i + 2)
+            if end != -1:
+                result.append(text[i : end + 2])
+                i = end + 2
+                continue
+            # Unmatched — emit literal and advance
+            result.append(text[i])
+            i += 1
+            continue
+
         if text[i] == "{":
             close = _find_closing_brace(text, i)
             if close == -1:
