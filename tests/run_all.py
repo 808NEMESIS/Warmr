@@ -18,6 +18,7 @@ TEST_MODULES = [
     "test_engagement_scorer",
     "test_suppression",
     "test_heatr_integration",
+    "test_bounce_handler",
 ]
 
 

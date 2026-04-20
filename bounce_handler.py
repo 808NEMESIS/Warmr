@@ -164,9 +164,16 @@ def classify_bounce(body: str) -> str:
 def extract_original_recipient(parsed, raw_body: str) -> Optional[str]:
     """Pull the original recipient email from a DSN."""
     for part in parsed.walk() if parsed.is_multipart() else [parsed]:
-        txt = ""
-        payload = part.get_payload(decode=True)
-        if payload:
+        # message/delivery-status parts don't decode via get_payload(decode=True)
+        # because Python's email lib treats them as container-messages. Use
+        # as_string() to get the raw text representation instead.
+        ct = (part.get_content_type() or "").lower()
+        if ct == "message/delivery-status":
+            txt = part.as_string()
+        else:
+            payload = part.get_payload(decode=True)
+            if not payload:
+                continue
             try:
                 txt = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
             except Exception:

@@ -40,31 +40,96 @@ Warmr is built for the BENELUX market (Netherlands, Belgium, Luxembourg) but is 
 ```
 /
 ├── CLAUDE.md                  ← You are here
-├── .env                       ← Real credentials (never commit)
-├── .env.example               ← Template with placeholder values
-├── requirements.txt           ← Python dependencies
-├── warmup_engine.py           ← Sends warmup emails via SMTP
-├── imap_processor.py          ← Checks inboxes, rescues spam, generates replies
-├── bounce_handler.py          ← Processes bounces and spam complaints
-├── reply_classifier.py        ← Classifies incoming replies via Claude API
-├── inbox_rotator.py           ← Selects optimal sending inbox per campaign send
-├── blacklist_checker.py       ← Daily check against known blacklists
-├── daily_reset.py             ← Resets daily_sent counters at midnight
-├── weekly_report.py           ← Generates weekly deliverability report
-├── supabase_schema.sql        ← Full database schema
+├── WARMR_AUDIT.md             ← Architecture audit report (April 2026)
+├── README.md                  ← GitHub-facing project description
+├── .env / .env.example        ← Credentials (never commit .env)
+├── requirements.txt
+├── full_schema.sql            ← Full Supabase schema (single-file)
+├── supabase_schema.sql        ← Legacy schema (use full_schema.sql)
+│
+├── CORE ENGINES ───────────────────────────────────────────
+├── warmup_engine.py           ← Sends warmup emails via SMTP; self-healing counters
+├── imap_processor.py          ← Spam rescue + multi-turn warmup replies
+├── campaign_scheduler.py      ← Campaign sender: rotation, spintax, A/B, tracking
+├── bounce_handler.py          ← DSN + ARF classification (hard/soft/complaint)
+├── reply_classifier.py        ← Claude Haiku reply categorisation
+├── daily_reset.py             ← Midnight reset + engagement decay + nurture check
+├── weekly_report.py           ← Monday HTML email via Resend
+│
+├── SUPPORT ENGINES ────────────────────────────────────────
+├── inbox_rotator.py           ← Inbox selection (rep + load + provider)
+├── ab_optimizer.py            ← Auto-promote A/B winners (z-test)
+├── ab_test_engine.py          ← Deterministic variant selection per lead
+├── spintax_engine.py          ← {opt1|opt2} + {{var}} rendering
+├── send_time_optimizer.py     ← Best-time-to-send per campaign
+├── sequence_analyzer.py       ← Weekly sequence performance review
+├── placement_tester.py        ← Gmail/Outlook/Yahoo seed-account placement
+├── content_scorer.py          ← Rule + AI content spam-score
+├── dns_monitor.py             ← SPF/DKIM/DMARC drift + blacklist checks
+├── diagnostics_engine.py      ← Reputation drift + SMTP-error auto-pause
+├── daily_briefing.py          ← AI morning digest via Resend
+├── funnel_engine.py           ← Stage transitions + reply routing
+├── engagement_scorer.py       ← Per-lead score (+/- events + daily decay)
+├── enrichment_engine.py       ← Email verify + Claude opener generation
+├── enrichment_queue.py        ← Async enrichment worker
+├── crm_dispatcher.py          ← HubSpot/Pipedrive/webhook sync
+├── webhook_dispatcher.py      ← Outbound webhook delivery + HMAC + circuit breaker
+├── test_connections.py        ← SMTP/IMAP connectivity smoke test
+│
+├── SCHEDULERS ─────────────────────────────────────────────
+├── crontab_warmr.sh           ← Legacy cron installer (replaced by launchd on macOS)
+├── install_launchd.sh         ← macOS launchd agent installer (recommended)
+│
+├── api/                       ← FastAPI middleware layer
+│   ├── main.py                ← All 70+ endpoints
+│   ├── auth.py                ← JWT validation (HS256 + ES256), suspension, impersonation
+│   ├── public_api.py          ← External-facing API (for Heatr); API-key auth
+│   ├── dns_check.py           ← Live DNS queries
+│   ├── models.py              ← Pydantic models
+│   └── *_migration.sql        ← Incremental schema migrations
+│
 ├── frontend/
-│   ├── index.html             ← Login / signup page
-│   ├── dashboard.html         ← Main warmup monitoring dashboard
-│   ├── inboxes.html           ← Inbox management page
-│   ├── domains.html           ← Domain DNS status page
-│   ├── campaigns.html         ← Campaign scheduler page
-│   └── app.js                 ← Shared JS: Supabase auth + API calls
-└── n8n/
-    ├── warm-up-sender.json    ← n8n workflow: send warmup emails
-    ├── warm-up-receiver.json  ← n8n workflow: IMAP check + spam rescue
-    ├── campaign-scheduler.json← n8n workflow: campaign email scheduler
-    ├── bounce-processor.json  ← n8n workflow: bounce processing
-    └── reply-classifier.json  ← n8n workflow: classify replies
+│   ├── index.html             ← Login / signup
+│   ├── dashboard.html         ← Reputation + activity + forecast badges
+│   ├── inboxes.html           ← Inbox management (add/pause/delete)
+│   ├── domains.html           ← DNS status + recovery steps
+│   ├── campaigns.html         ← Campaign builder (AI sequence writer, templates)
+│   ├── campaign-performance.html ← Per-campaign SVG trend chart
+│   ├── leads.html             ← Priority-sorted leads + bulk actions
+│   ├── funnel.html            ← Kanban cold→warm→hot→meeting
+│   ├── unified-inbox.html     ← Reply inbox + AI reply suggestions
+│   ├── suppression.html       ← Do-not-contact list
+│   ├── settings.html          ← Profile + CRM integrations + sync log
+│   ├── decisions.html         ← Decision log viewer
+│   ├── experiments.html       ← A/B experiment management
+│   ├── admin.html             ← Admin client management (is_admin only)
+│   ├── onboarding.html        ← Epic intro + 4-step wizard
+│   ├── app.js                 ← Supabase auth + polling + keyboard shortcuts
+│   ├── config.js              ← Runtime config (anon key, API base)
+│   └── style.css              ← Design system + dark mode
+│
+├── utils/
+│   ├── cost_tracker.py        ← Claude API budget enforcement
+│   ├── startup_validator.py   ← Boot-time config validation
+│   ├── password_policy.py     ← Signup password strength
+│   ├── secrets_vault.py       ← Fernet encryption for SMTP passwords
+│   ├── service_audit.py       ← Service-role query audit trail
+│   ├── structured_logging.py  ← JSON logs + correlation IDs
+│   └── metrics.py             ← Prometheus /metrics endpoint
+│
+├── tests/                     ← 80 unit + 2 live RLS integration tests
+│   ├── test_spintax_engine.py       (20)
+│   ├── test_funnel_engine.py        (11)
+│   ├── test_engagement_scorer.py    (11)
+│   ├── test_suppression.py          (8)
+│   ├── test_heatr_integration.py    (9)
+│   ├── test_bounce_handler.py       (21)
+│   ├── test_rls_isolation.py        (2, live Supabase)
+│   ├── run_all.py                   ← Runs all test modules
+│   └── test_{smtp,imap,claude,supabase}_connection.py ← Smoke tests
+│
+└── n8n/                       ← Alternative scheduler (launchd preferred on macOS)
+    └── *.json                 ← 14 workflow definitions
 ```
 
 ---
