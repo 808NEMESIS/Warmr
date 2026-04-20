@@ -515,13 +515,17 @@
       const inboxes = await api(`/analytics/inboxes?days=${_range}`);
       _inboxes = inboxes;
 
-      // Fetch real reputation history per inbox in parallel
+      // Fetch reputation history + forecast per inbox in parallel
       const historyPromises = inboxes.slice(0, 9).map(async (inbox) => {
+        const id = inbox.inbox_id || inbox.id;
         try {
-          const h = await api(`/warmup/inbox/${inbox.inbox_id || inbox.id}/history?days=${_range}`);
+          const h = await api(`/warmup/inbox/${id}/history?days=${_range}`);
           inbox._history = (h.series || []).map(d => d.avg_reputation).filter(v => v != null);
           inbox._dailySent = (h.series || []).map(d => d.sent);
         } catch { inbox._history = []; inbox._dailySent = []; }
+        try {
+          inbox._forecast = await api(`/warmup/inbox/${id}/forecast`);
+        } catch { inbox._forecast = null; }
         return inbox;
       });
       await Promise.all(historyPromises);
@@ -580,8 +584,25 @@
             <span class="text-xs text-muted">↑ ${inbox.warmup_sent} warmup</span>
             <span class="text-xs text-muted">${inbox.campaign_sent} campagne</span>
           </div>
+          ${renderForecastBadge(inbox._forecast)}
         </div>`;
     }).join('');
+  }
+
+  function renderForecastBadge(fc) {
+    if (!fc) return '';
+    const VERDICT = {
+      ready:           { txt: '✓ Klaar voor campagnes',        bg: '#d1fae5', color: '#065f46' },
+      on_track:        { txt: null, /* dynamic */             bg: '#dbeafe', color: '#1e40af' },
+      stalled:         { txt: '⚠ Gestagneerd',                 bg: '#fef3c7', color: '#92400e' },
+      declining:       { txt: '↓ Daalt — check inbox',         bg: '#fee2e2', color: '#991b1b' },
+      insufficient_data: { txt: 'Onvoldoende data',             bg: '#f3f4f6', color: '#6b7280' },
+    };
+    const style = VERDICT[fc.verdict] || VERDICT.insufficient_data;
+    const text = fc.verdict === 'on_track'
+      ? `📈 Klaar over ~${Math.round(fc.days_until_ready || 0)} dagen`
+      : style.txt;
+    return `<div style="margin-top:.5rem;padding:.25rem .55rem;background:${style.bg};color:${style.color};font-size:.7rem;font-weight:600;border-radius:99px;text-align:center">${text}</div>`;
   }
 
   // ── Activity feed ─────────────────────────────────────────────────────────────

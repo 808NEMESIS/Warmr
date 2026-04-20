@@ -176,9 +176,10 @@
         </div>
         <div style="flex:1"></div>
         <select class="form-select" id="sort-select" style="width:auto;font-size:.8125rem;padding:.4rem .8rem" onchange="render()">
+          <option value="priority" selected>Prioriteit ↓ (AI)</option>
           <option value="engagement_desc">Engagement ↓</option>
           <option value="engagement_asc">Engagement ↑</option>
-          <option value="created_desc" selected>Recent toegevoegd</option>
+          <option value="created_desc">Recent toegevoegd</option>
           <option value="created_asc">Oudste eerst</option>
           <option value="activity_desc">Laatst actief</option>
         </select>
@@ -247,6 +248,24 @@ var _engFilter = 'all';
 async function loadLeads() {
   try {
     _leads = await api('/leads?limit=500') || [];
+    // Fetch composite priority scores and merge them onto leads (keyed by id).
+    try {
+      var priority = await api('/leads/priority?limit=500') || [];
+      var pMap = {};
+      priority.forEach(function(p) { pMap[p.id] = p; });
+      _leads.forEach(function(l) {
+        var p = pMap[l.id];
+        if (p) {
+          l._priority = p.priority;
+          l._reasons = p.reasons || [];
+        } else {
+          l._priority = 0;
+          l._reasons = [];
+        }
+      });
+    } catch (err) {
+      console.debug('priority fetch failed:', err && err.message);
+    }
     updateStats();
     render();
   } catch (e) { toast('Kon leads niet laden: ' + e.message, 'error'); }
@@ -318,12 +337,13 @@ function render() {
   // Sort
   filtered.sort(function(a, b) {
     switch (sortMode) {
+      case 'priority':        return (Number(b._priority)||0) - (Number(a._priority)||0);
       case 'engagement_desc': return (Number(b.engagement_score)||0) - (Number(a.engagement_score)||0);
       case 'engagement_asc':  return (Number(a.engagement_score)||0) - (Number(b.engagement_score)||0);
       case 'created_asc':     return new Date(a.created_at||0) - new Date(b.created_at||0);
       case 'activity_desc':   return new Date(b.engagement_updated_at||b.created_at||0) - new Date(a.engagement_updated_at||a.created_at||0);
-      case 'created_desc':
-      default:                return new Date(b.created_at||0) - new Date(a.created_at||0);
+      case 'created_desc':    return new Date(b.created_at||0) - new Date(a.created_at||0);
+      default:                return (Number(b._priority)||0) - (Number(a._priority)||0);
     }
   });
 
@@ -342,6 +362,10 @@ function render() {
     var engCat = engCategory(score);
     var stage = l.funnel_stage || 'cold';
     var lastActive = l.engagement_updated_at || l.created_at;
+    var priority = Number(l._priority) || 0;
+    var priorityLine = (sortMode === 'priority' && priority > 0)
+      ? '<div style="font-size:.68rem;color:var(--primary);margin-top:.15rem" title="' + (l._reasons || []).join(', ') + '">★ ' + priority.toFixed(0) + ' — ' + ((l._reasons || [])[0] || '') + '</div>'
+      : '';
 
     var checked = _selected.has(l.id) ? 'checked' : '';
     return '<tr onclick="rowClick(event,\'' + l.id + '\')">' +
@@ -352,6 +376,7 @@ function render() {
           '<div>' +
             '<div style="font-weight:600;font-size:.8125rem">' + name + '</div>' +
             '<div style="font-size:.75rem;color:var(--muted)">' + (l.email || '') + '</div>' +
+            priorityLine +
           '</div>' +
         '</div>' +
       '</td>' +
