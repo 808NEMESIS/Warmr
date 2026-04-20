@@ -68,6 +68,12 @@ make_plist "diagnostics" "diagnostics_engine.py" 3600
 # DNS monitor — every 15 minutes
 make_plist "dns-monitor" "dns_monitor.py" 900
 
+# Bounce handler — every 30 minutes (scans IMAP for DSNs + ARF complaints)
+make_plist "bounce-handler" "bounce_handler.py" 1800
+
+# Weekly report — hourly poll, script itself only runs on Mondays
+make_plist "weekly-report" "weekly_report.py" 3600
+
 echo ""
 echo "Installed. To see status:"
 echo "  launchctl list | grep warmr"

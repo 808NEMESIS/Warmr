@@ -2443,7 +2443,7 @@ async def get_notifications(client_id: ClientId, days: int = Query(default=1, ge
                     id=row["id"],
                     type="error",
                     inbox_email=inbox_email_map.get(row.get("inbox_id", ""), ""),
-                    message=row.get("notes") or "An error occurred during warmup.",
+                    message=_sanitize_error_message(row.get("notes") or ""),
                     timestamp=datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00")),
                 )
             )
@@ -3588,6 +3588,44 @@ async def generate_briefing(
 # ---------------------------------------------------------------------------
 # Decision log
 # ---------------------------------------------------------------------------
+
+def _sanitize_error_message(raw: str) -> str:
+    """
+    Turn raw Python/SMTP/IMAP exception text into a user-friendly message.
+
+    Never exposes stack traces, file paths, or module internals to end users.
+    """
+    if not raw:
+        return "Onbekende fout tijdens warmup."
+    text = str(raw).lower()
+
+    # Pattern → human message (in Dutch, matches app language)
+    patterns = [
+        ("eof occurred in violation of protocol", "Tijdelijke SSL-hiccup bij Gmail — inbox herstelt automatisch bij de volgende run."),
+        ("connection refused",       "Kon geen verbinding maken met Gmail — controleer je app-wachtwoord."),
+        ("connection timed out",     "Gmail reageert traag — run automatisch opnieuw."),
+        ("connection reset",         "Verbinding werd verbroken door Gmail — meestal een kortstondige netwerkpiek."),
+        ("authentication failed",    "Authenticatie mislukt — app-wachtwoord is mogelijk verlopen of ingetrokken."),
+        ("invalid credentials",      "Inloggegevens afgewezen — genereer een nieuw app-wachtwoord in Google Account."),
+        ("login failed",             "Inloggen mislukt — app-wachtwoord controleren."),
+        ("over quota",               "Dagelijkse Gmail-limiet bereikt — wacht tot middernacht."),
+        ("421 ",                     "Gmail accepteert tijdelijk geen mail (rate limit) — wordt automatisch opnieuw geprobeerd."),
+        ("550 ",                     "Ontvanger weigerde de mail (ongeldig adres of blacklist)."),
+        ("dns ",                     "DNS-lookup mislukte — check je domein-configuratie."),
+        ("timeout",                  "Time-out — wordt automatisch opnieuw geprobeerd."),
+        ("claude",                   "AI-service gaf een tijdelijke fout terug."),
+        ("anthropic",                "AI-service gaf een tijdelijke fout terug."),
+        ("rate limit",               "AI-limiet bereikt — wacht enkele minuten."),
+        ("smtp",                     "Fout bij het versturen via Gmail SMTP — wordt automatisch opnieuw geprobeerd."),
+        ("imap",                     "Fout bij het ophalen via IMAP — wordt automatisch opnieuw geprobeerd."),
+    ]
+    for needle, friendly in patterns:
+        if needle in text:
+            return friendly
+
+    # Fallback: generic message without leaking details
+    return "Er ging iets mis tijdens de warmup-run. Wordt automatisch opnieuw geprobeerd."
+
 
 def _log_decision(
     *,
