@@ -4896,7 +4896,8 @@ async def upsert_client_settings(client_id: ClientId, body: dict) -> dict:
 
 @app.get("/crm/integrations", tags=["CRM"])
 async def list_crm_integrations(client_id: ClientId) -> list[dict]:
-    """List all CRM integrations for this client."""
+    """List all CRM integrations for this client (api_key returned masked)."""
+    from utils.secrets_vault import decrypt as _vault_decrypt
     resp = (
         _supabase.table("crm_integrations")
         .select("*")
@@ -4904,11 +4905,19 @@ async def list_crm_integrations(client_id: ClientId) -> list[dict]:
         .order("created_at", desc=True)
         .execute()
     )
-    # Don't expose the full API key in list view
+    # Don't expose the full API key in list view. Decrypt first so the mask
+    # reflects the real plaintext tail (otherwise the mask of an `enc:...`
+    # ciphertext is useless to the UI).
     items = resp.data or []
     for item in items:
-        if item.get("api_key"):
-            item["api_key"] = item["api_key"][:6] + "..." + item["api_key"][-4:] if len(item["api_key"]) > 12 else "***"
+        stored = item.get("api_key")
+        if not stored:
+            continue
+        try:
+            plain = _vault_decrypt(stored)
+        except Exception:
+            plain = stored  # If decrypt fails, mask ciphertext anyway
+        item["api_key"] = plain[:6] + "..." + plain[-4:] if len(plain) > 12 else "***"
     return items
 
 
@@ -4937,10 +4946,12 @@ async def create_crm_integration(client_id: ClientId, body: dict) -> dict:
                 detail="Webhook URL verification failed. Your endpoint must respond to GET requests and echo the X-Warmr-Challenge request header back as X-Warmr-Verification.",
             )
 
+    from utils.secrets_vault import encrypt as _vault_encrypt
+    api_key_raw = body.get("api_key")
     payload = {
         "client_id": client_id,
         "provider": provider,
-        "api_key": body.get("api_key"),
+        "api_key": _vault_encrypt(api_key_raw) if api_key_raw else api_key_raw,
         "webhook_url": webhook_url,
         "config": body.get("config") or {},
         "active": body.get("active", True),
@@ -4950,7 +4961,11 @@ async def create_crm_integration(client_id: ClientId, body: dict) -> dict:
     }
     try:
         resp = _supabase.table("crm_integrations").insert(payload).execute()
-        return resp.data[0] if resp.data else payload
+        # Never return the encrypted blob to the client — mask it like the list view.
+        created = resp.data[0] if resp.data else payload
+        if created.get("api_key") and api_key_raw:
+            created["api_key"] = api_key_raw[:6] + "..." + api_key_raw[-4:] if len(api_key_raw) > 12 else "***"
+        return created
     except Exception as exc:
         if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
             raise HTTPException(status_code=409, detail=f"{provider} integration already exists for this client.")
@@ -4966,14 +4981,23 @@ async def update_crm_integration(integration_id: str, client_id: ClientId, body:
     if check.data[0]["client_id"] != client_id:
         raise HTTPException(status_code=403, detail="Access denied.")
 
+    from utils.secrets_vault import encrypt as _vault_encrypt
     allowed = {"api_key", "webhook_url", "config", "active", "sync_on_reply", "sync_on_interested", "sync_on_meeting"}
     patch = {k: v for k, v in body.items() if k in allowed}
     if not patch:
         raise HTTPException(status_code=422, detail="No valid fields to update.")
+    # Encrypt the api_key before persisting. encrypt() is idempotent — if the
+    # value already starts with "enc:" it's returned unchanged.
+    if patch.get("api_key"):
+        patch["api_key"] = _vault_encrypt(patch["api_key"])
     patch["updated_at"] = _now_utc()
 
     resp = _supabase.table("crm_integrations").update(patch).eq("id", integration_id).execute()
-    return resp.data[0] if resp.data else {"id": integration_id}
+    # Don't leak the encrypted blob back to the client.
+    result = resp.data[0] if resp.data else {"id": integration_id}
+    if result.get("api_key"):
+        result["api_key"] = "***"
+    return result
 
 
 @app.delete("/crm/integrations/{integration_id}", tags=["CRM"], status_code=204)
@@ -4997,6 +5021,15 @@ async def test_crm_integration(integration_id: str, client_id: ClientId) -> dict
     integration = check.data[0]
     if integration["client_id"] != client_id:
         raise HTTPException(status_code=403, detail="Access denied.")
+
+    # Decrypt the api_key so the dispatcher can use it directly. decrypt()
+    # returns plaintext values (no enc: prefix) unchanged → backward compat.
+    from utils.secrets_vault import decrypt as _vault_decrypt
+    if integration.get("api_key"):
+        try:
+            integration["api_key"] = _vault_decrypt(integration["api_key"])
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to decrypt API key: {exc}")
 
     test_lead = {
         "id": "test",

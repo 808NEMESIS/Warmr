@@ -19,6 +19,7 @@ TEST_MODULES = [
     "test_suppression",
     "test_heatr_integration",
     "test_bounce_handler",
+    "test_secrets_encryption",
 ]
 
 

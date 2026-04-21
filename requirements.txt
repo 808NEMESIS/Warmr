@@ -23,6 +23,7 @@ pandas==2.2.3              # CSV parsing for lead imports
 python-multipart==0.0.20   # Required by FastAPI for file upload (UploadFile) support
 email-validator==2.3.0     # Required by Pydantic EmailStr (used in InboxCreate model)
 slowapi==0.1.9             # Rate limiting middleware for FastAPI (wraps limits library)
+cryptography>=42.0         # Fernet symmetric encryption for secrets_vault (webhooks/CRM keys)
 
 # ── Enrichment engine ─────────────────────────────────────────────────────────
 # httpx is already listed above (used by both API layer and enrichment HTTP calls)

@@ -127,7 +127,17 @@ def deliver(
         "nonce":      nonce,
     }, ensure_ascii=False).encode("utf-8")
 
-    signature = _sign_payload(webhook["secret"], body_bytes)
+    # Decrypt the stored secret. decrypt() is a no-op for plaintext (backward
+    # compat with webhooks created before encryption was wired on).
+    stored_secret = webhook["secret"]
+    try:
+        from utils.secrets_vault import decrypt as _vault_decrypt
+        signing_secret = _vault_decrypt(stored_secret)
+    except Exception as exc:
+        logger.error("Failed to decrypt webhook secret for webhook %s: %s", webhook.get("id"), exc)
+        return False, 0, f"decrypt error: {exc}"
+
+    signature = _sign_payload(signing_secret, body_bytes)
 
     headers = {
         "Content-Type":       "application/json",

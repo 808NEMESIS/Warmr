@@ -633,11 +633,20 @@ async def create_webhook(body: WebhookIn, ctx: ApiCtx) -> dict:
     secret = secrets.token_hex(32)  # 64-char hex signing secret
     sb = _sb()
 
+    # Encrypt at rest. The plaintext is returned to the caller ONCE below so
+    # they can configure their receiving endpoint. After this POST, the
+    # plaintext is unrecoverable from the API (list view never returns it).
+    try:
+        from utils.secrets_vault import encrypt as _vault_encrypt
+        secret_stored = _vault_encrypt(secret)
+    except ImportError:
+        secret_stored = secret
+
     row = {
         "client_id":  ctx.client_id,
         "url":        body.url,
         "events":     body.events,
-        "secret":     secret,
+        "secret":     secret_stored,
         "active":     True,
         "created_at": _NOW_UTC(),
     }
@@ -646,7 +655,7 @@ async def create_webhook(body: WebhookIn, ctx: ApiCtx) -> dict:
         raise HTTPException(status_code=500, detail="Failed to register webhook.")
 
     webhook = resp.data[0]
-    webhook["secret"] = secret  # return secret once
+    webhook["secret"] = secret  # return PLAINTEXT secret once (never again)
     return webhook
 
 

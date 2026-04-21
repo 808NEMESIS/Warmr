@@ -156,6 +156,20 @@ def dispatch_event(client_id: str, lead: dict, event_type: str, sb: Client | Non
     if not integrations:
         return []
 
+    # Decrypt stored api_keys once per dispatch so sync_to_* receives plaintext.
+    # decrypt() is a no-op for plaintext rows (backward-compat for unmigrated data).
+    try:
+        from utils.secrets_vault import decrypt as _vault_decrypt
+        for integration in integrations:
+            if integration.get("api_key"):
+                try:
+                    integration["api_key"] = _vault_decrypt(integration["api_key"])
+                except Exception as exc:
+                    logger.error("Failed to decrypt api_key for integration %s: %s", integration.get("id"), exc)
+                    integration["api_key"] = ""  # Force sync to fail cleanly
+    except ImportError:
+        pass
+
     results = []
     for integration in integrations:
         # Check if this event type should sync
