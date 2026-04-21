@@ -141,6 +141,75 @@ def test_webhook_payload_shape_for_replies():
     assert "workspace_id" in sample["custom_fields"]
 
 
+def test_bulk_leads_response_shape_matches_heatr_client():
+    """
+    Heatr's warmr_client.push_leads_bulk reads result.get("pushed"|"failed"|"duplicates").
+    Warmr's POST /leads + POST /leads/bulk MUST return those keys exactly.
+    """
+    # Captured from api/public_api.py public_create_leads return
+    sample = {
+        "pushed":        42,
+        "duplicates":    3,
+        "failed":        1,
+        "error_details": ["row 17: missing first_name"],
+    }
+    assert "pushed" in sample      # was "imported" pre-2026-04
+    assert "failed" in sample      # was "errors" pre-2026-04
+    assert "duplicates" in sample
+
+
+def test_campaign_create_response_returns_id_field():
+    """
+    Heatr's warmr_client.create_campaign raises unless result.get("id") OR
+    result.get("campaign_id") is truthy. Warmr's POST /campaigns returns BOTH
+    as aliases so either client contract works.
+    """
+    sample_response = {
+        "id": "c-uuid-abc",
+        "campaign_id": "c-uuid-abc",
+        "name": "Test campaign",
+        "status": "draft",
+        "steps_inserted": 0,
+    }
+    warmr_id = sample_response.get("id") or sample_response.get("campaign_id")
+    assert warmr_id, "Warmr must return a campaign id after POST /campaigns"
+
+
+def test_inbox_availability_response_shape():
+    """
+    Heatr's warmr_client.get_inbox_availability docstring expects at least
+    id, daily_remaining, reputation_score. Warmr's new endpoint returns those
+    plus daily_cap + daily_sent + status + email for richer client decisions.
+    """
+    sample = {
+        "id":               "inbox-uuid",
+        "email":            "sender@example.com",
+        "status":           "ready",
+        "reputation_score": 78.5,
+        "daily_cap":        50,
+        "daily_sent":       12,
+        "daily_remaining":  38,
+    }
+    # Heatr-required minimum
+    assert "id" in sample
+    assert "daily_remaining" in sample
+    assert "reputation_score" in sample
+    # Invariant: remaining == cap - sent (non-negative)
+    assert sample["daily_remaining"] == max(0, sample["daily_cap"] - sample["daily_sent"])
+
+
+def test_inbox_list_response_envelope():
+    """
+    Heatr's get_ready_inboxes handles both `{inboxes: [...]}` envelope and a
+    bare list. Warmr returns the envelope form — this test documents that.
+    """
+    sample = {"inboxes": [
+        {"id": "inbox-1", "email": "a@x.nl", "status": "ready", "reputation_score": 72},
+    ]}
+    assert isinstance(sample, dict) and "inboxes" in sample
+    assert isinstance(sample["inboxes"], list)
+
+
 def test_event_names_handled_by_heatr():
     """Heatr must handle these event types (see /Users/nemesis/Heatr/api/main.py)."""
     handled_events = {

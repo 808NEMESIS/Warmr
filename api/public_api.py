@@ -246,6 +246,21 @@ class BulkLeadIn(BaseModel):
     deduplicate: bool = True             # skip leads whose email already exists for this client
 
 
+class CampaignSequenceStep(BaseModel):
+    """One step in a campaign email sequence (POST /campaigns)."""
+    subject:    str
+    body:       str
+    delay_days: int = Field(default=0, ge=0, le=60)
+    step_order: Optional[int] = None
+
+
+class CampaignIn(BaseModel):
+    """Payload for POST /campaigns."""
+    name:     str = Field(..., min_length=1, max_length=200)
+    steps:    list[CampaignSequenceStep] = Field(default_factory=list, max_length=20)
+    settings: Optional[dict] = None
+
+
 class WebhookIn(BaseModel):
     url:    str = Field(..., min_length=8)
     events: list[str]
@@ -401,11 +416,20 @@ async def public_create_leads(body: BulkLeadIn, ctx: ApiCtx, background_tasks: B
         )
 
     return {
-        "imported":     imported,
-        "duplicates":   duplicates,
-        "errors":       errors,
+        "pushed":        imported,
+        "duplicates":    duplicates,
+        "failed":        errors,
         "error_details": error_details[:20],  # cap to avoid huge responses
     }
+
+
+# Alias of POST /leads for the Heatr client (which calls /leads/bulk explicitly).
+# Same semantics, same request/response shape.
+@public_router.post("/leads/bulk", status_code=201)
+async def public_create_leads_bulk(
+    body: BulkLeadIn, ctx: ApiCtx, background_tasks: BackgroundTasks
+) -> dict:
+    return await public_create_leads(body, ctx, background_tasks)
 
 
 @public_router.get("/leads/{lead_id}")
@@ -499,8 +523,144 @@ async def public_list_leads(
 
 
 # ===========================================================================
+# INBOX API (read-only — Heatr capacity checks)
+# ===========================================================================
+
+_INBOX_PUBLIC_FIELDS = (
+    "id, email, domain, provider, status, reputation_score, "
+    "daily_sent, daily_warmup_target, daily_campaign_target"
+)
+
+
+@public_router.get("/inboxes")
+async def public_list_inboxes(
+    ctx: ApiCtx,
+    status: Optional[str] = Query(
+        None,
+        description="Filter by status (e.g. 'ready', 'warmup', 'paused', 'retired').",
+    ),
+) -> dict:
+    """
+    List this client's inboxes. Read-only — inbox management happens in the
+    dashboard. Intended for external integrations (e.g. Heatr) to pick a
+    sending inbox before pushing leads.
+
+    Returns `{inboxes: [...]}`.
+
+    Required permission: read_analytics
+    """
+    ctx.require("read_analytics")
+    sb = _sb()
+    q = sb.table("inboxes").select(_INBOX_PUBLIC_FIELDS).eq("client_id", ctx.client_id)
+    if status:
+        q = q.eq("status", status)
+    resp = q.execute()
+    return {"inboxes": resp.data or []}
+
+
+@public_router.get("/inboxes/{inbox_id}/availability")
+async def public_inbox_availability(inbox_id: str, ctx: ApiCtx) -> dict:
+    """
+    Current sending capacity for a single inbox. `daily_remaining` is the
+    number of sends still allowed today across warmup + campaigns combined.
+
+    Required permission: read_analytics
+    """
+    ctx.require("read_analytics")
+    sb = _sb()
+    resp = (
+        sb.table("inboxes")
+        .select(_INBOX_PUBLIC_FIELDS)
+        .eq("id", inbox_id)
+        .eq("client_id", ctx.client_id)
+        .limit(1)
+        .execute()
+    )
+    rows = resp.data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Inbox not found.")
+    inbox = rows[0]
+
+    warmup_target   = int(inbox.get("daily_warmup_target")   or 0)
+    campaign_target = int(inbox.get("daily_campaign_target") or 0)
+    daily_cap       = warmup_target + campaign_target
+    daily_sent      = int(inbox.get("daily_sent") or 0)
+    daily_remaining = max(0, daily_cap - daily_sent)
+
+    return {
+        "id":                inbox["id"],
+        "email":             inbox.get("email"),
+        "status":            inbox.get("status"),
+        "reputation_score":  inbox.get("reputation_score"),
+        "daily_cap":         daily_cap,
+        "daily_sent":        daily_sent,
+        "daily_remaining":   daily_remaining,
+    }
+
+
+# ===========================================================================
 # CAMPAIGN API
 # ===========================================================================
+
+@public_router.post("/campaigns", status_code=201)
+async def public_create_campaign(body: CampaignIn, ctx: ApiCtx) -> dict:
+    """
+    Create a new campaign in draft status. Sequence steps are optional —
+    a campaign can be created empty and steps added later via the private
+    API or another integration.
+
+    Returns `{id, name, status, ...}` where `id` is the campaign UUID.
+
+    Required permission: trigger_campaigns
+    """
+    ctx.require("trigger_campaigns")
+    sb = _sb()
+
+    settings = body.settings or {}
+    row = {
+        "client_id": ctx.client_id,
+        "name":      body.name.strip(),
+        "status":    "draft",
+    }
+    for key in ("language", "daily_limit", "timezone", "send_days",
+                "send_window_start", "send_window_end",
+                "stop_on_reply", "stop_on_unsubscribe", "bounce_threshold"):
+        if key in settings and settings[key] is not None:
+            row[key] = settings[key]
+
+    resp = sb.table("campaigns").insert(row).execute()
+    if not resp.data:
+        raise HTTPException(status_code=500, detail="Failed to create campaign.")
+    created = resp.data[0]
+    campaign_id = created["id"]
+
+    steps_inserted = 0
+    if body.steps:
+        step_rows = []
+        for i, step in enumerate(body.steps, start=1):
+            step_rows.append({
+                "campaign_id": campaign_id,
+                "client_id":   ctx.client_id,
+                "step_order":  step.step_order or i,
+                "subject":     step.subject,
+                "body":        step.body,
+                "delay_days":  step.delay_days,
+            })
+        try:
+            step_resp = sb.table("sequence_steps").insert(step_rows).execute()
+            steps_inserted = len(step_resp.data or [])
+        except Exception as exc:
+            logger.warning("Campaign %s created but sequence_steps insert failed: %s",
+                           campaign_id, exc)
+
+    return {
+        "id":             campaign_id,
+        "campaign_id":    campaign_id,   # alias for clients that read either
+        "name":           created.get("name"),
+        "status":         created.get("status"),
+        "steps_inserted": steps_inserted,
+    }
+
 
 @public_router.post("/campaigns/{campaign_id}/leads", status_code=201)
 async def public_add_leads_to_campaign(campaign_id: str, body: BulkLeadIn, ctx: ApiCtx) -> dict:
