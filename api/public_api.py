@@ -327,15 +327,124 @@ def _emit_event(sb: Client, client_id: str, event_type: str, payload: dict) -> N
 # ===========================================================================
 
 @public_router.post("/leads", status_code=201)
-async def public_create_leads(body: BulkLeadIn, ctx: ApiCtx, background_tasks: BackgroundTasks) -> dict:
+async def public_create_leads(
+    body: dict,
+    ctx: ApiCtx,
+    background_tasks: BackgroundTasks,
+) -> dict:
+    """
+    Create lead(s). Accepts two body shapes — the response shape depends on it.
+
+    Bulk:
+        {"leads": [lead, lead, ...], "campaign_id": ..., "deduplicate": true}
+      → {"pushed": N, "failed": N, "duplicates": N, "error_details": [...]}
+
+    Single:
+        {"email": "...", "first_name": "...", "campaign_id": ..., "custom_fields": {...}}
+      → the inserted row: {"id": "...", "email": "...", ...}
+
+    For new integrations, prefer POST /leads/bulk — it's always bulk and the
+    response shape is stable. The single-lead form is supported here for
+    compatibility with clients (e.g. Heatr's push_lead) that POST a flat dict.
+
+    Required permission: write_leads
+    """
+    if isinstance(body, dict) and isinstance(body.get("leads"), list):
+        try:
+            bulk = BulkLeadIn(**body)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid bulk lead payload: {exc}")
+        return await _insert_leads_bulk(bulk, ctx, background_tasks)
+
+    try:
+        single = LeadIn(**body)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid lead payload: {exc}")
+    campaign_id = body.get("campaign_id")
+    deduplicate = bool(body.get("deduplicate", True))
+    return await _insert_lead_single(single, campaign_id, deduplicate, ctx, background_tasks)
+
+
+async def _insert_lead_single(
+    lead: LeadIn,
+    campaign_id: Optional[str],
+    deduplicate: bool,
+    ctx: "_ApiKeyContext",
+    background_tasks: BackgroundTasks,
+) -> dict:
+    """Insert one lead and return the row. 409 on duplicate when deduplicate=True."""
+    ctx.require("write_leads")
+    sb = _sb()
+
+    email_lower = lead.email.lower()
+    if deduplicate:
+        existing = (
+            sb.table("leads")
+            .select("id")
+            .eq("client_id", ctx.client_id)
+            .eq("email", email_lower)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            raise HTTPException(status_code=409, detail="Lead with this email already exists.")
+
+    row = {
+        "email":         email_lower,
+        "first_name":    lead.first_name,
+        "last_name":     lead.last_name,
+        "company_name":  lead.company_name,
+        "job_title":     lead.job_title,
+        "domain":        lead.domain or (email_lower.split("@")[1] if "@" in email_lower else None),
+        "phone":         lead.phone,
+        "linkedin_url":  lead.linkedin_url,
+        "custom_fields": lead.custom_fields or {},
+        "status":        "new",
+        "client_id":     ctx.client_id,
+        "imported_at":   _NOW_UTC(),
+    }
+
+    try:
+        resp = sb.table("leads").insert(row).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to insert lead: {exc}")
+    if not resp.data:
+        raise HTTPException(status_code=500, detail="Lead insert returned no row.")
+    inserted = resp.data[0]
+    lead_id = inserted["id"]
+
+    if campaign_id:
+        _require_campaign(sb, campaign_id, ctx.client_id)
+        try:
+            sb.table("campaign_leads").insert({
+                "campaign_id": campaign_id,
+                "lead_id":     lead_id,
+                "client_id":   ctx.client_id,
+            }).execute()
+        except Exception as exc:
+            logger.warning("Single lead %s created but campaign link failed: %s", lead_id, exc)
+
+    try:
+        from enrichment_queue import enqueue_leads_bulk
+        priority = 1 if campaign_id else 5
+        background_tasks.add_task(enqueue_leads_bulk, [lead_id], ctx.client_id, priority)
+    except Exception as exc:
+        logger.warning("Failed to queue enrichment for lead %s: %s", lead_id, exc)
+
+    return inserted
+
+
+async def _insert_leads_bulk(
+    body: BulkLeadIn,
+    ctx: "_ApiKeyContext",
+    background_tasks: BackgroundTasks,
+) -> dict:
     """
     Bulk-create leads. Max 1000 per request.
 
     - Deduplication (by email + client_id) is on by default.
     - If campaign_id is provided, leads are also added to campaign_leads.
-    - Returns counts of imported, duplicate, and errored rows.
-
-    Required permission: write_leads
+    - Returns counts: {pushed, failed, duplicates, error_details}.
     """
     ctx.require("write_leads")
     sb = _sb()
@@ -423,13 +532,12 @@ async def public_create_leads(body: BulkLeadIn, ctx: ApiCtx, background_tasks: B
     }
 
 
-# Alias of POST /leads for the Heatr client (which calls /leads/bulk explicitly).
-# Same semantics, same request/response shape.
+# Always-bulk endpoint — unambiguous shape, preferred for new integrations.
 @public_router.post("/leads/bulk", status_code=201)
 async def public_create_leads_bulk(
     body: BulkLeadIn, ctx: ApiCtx, background_tasks: BackgroundTasks
 ) -> dict:
-    return await public_create_leads(body, ctx, background_tasks)
+    return await _insert_leads_bulk(body, ctx, background_tasks)
 
 
 @public_router.get("/leads/{lead_id}")
@@ -663,7 +771,12 @@ async def public_create_campaign(body: CampaignIn, ctx: ApiCtx) -> dict:
 
 
 @public_router.post("/campaigns/{campaign_id}/leads", status_code=201)
-async def public_add_leads_to_campaign(campaign_id: str, body: BulkLeadIn, ctx: ApiCtx) -> dict:
+async def public_add_leads_to_campaign(
+    campaign_id: str,
+    body: BulkLeadIn,
+    ctx: ApiCtx,
+    background_tasks: BackgroundTasks,
+) -> dict:
     """
     Add leads to an existing campaign.
 
@@ -682,9 +795,8 @@ async def public_add_leads_to_campaign(campaign_id: str, body: BulkLeadIn, ctx: 
             detail=f"Cannot add leads to a campaign with status '{campaign.get('status')}'.",
         )
 
-    # Reuse bulk create logic — campaign_id is set
     body.campaign_id = campaign_id
-    return await public_create_leads(body, ctx)
+    return await _insert_leads_bulk(body, ctx, background_tasks)
 
 
 @public_router.get("/campaigns/{campaign_id}/stats")

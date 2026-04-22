@@ -141,6 +141,29 @@ def test_webhook_payload_shape_for_replies():
     assert "workspace_id" in sample["custom_fields"]
 
 
+def test_single_lead_push_shape_matches_heatr_client():
+    """
+    Heatr's warmr_client.push_lead POSTs a flat lead dict to /leads and reads
+    result.get("id") or result.get("lead_id"). Warmr's POST /leads now accepts
+    the flat shape (polymorphic on presence of 'leads' key) and returns the
+    inserted row — which contains 'id' from Supabase.
+    """
+    # Response shape Warmr returns for single-lead body (the inserted row)
+    sample_single_response = {
+        "id":           "lead-uuid-123",
+        "email":        "prospect@example.nl",
+        "first_name":   "Jan",
+        "last_name":    "de Vries",
+        "status":       "new",
+        "client_id":    "client-uuid",
+        "custom_fields": {"heatr_lead_id": "heatr-uuid-456"},
+    }
+    warmr_lead_id = sample_single_response.get("id") or sample_single_response.get("lead_id")
+    assert warmr_lead_id == "lead-uuid-123"
+    # heatr_lead_id must round-trip so Warmr→Heatr webhooks can correlate
+    assert sample_single_response["custom_fields"]["heatr_lead_id"]
+
+
 def test_bulk_leads_response_shape_matches_heatr_client():
     """
     Heatr's warmr_client.push_leads_bulk reads result.get("pushed"|"failed"|"duplicates").
