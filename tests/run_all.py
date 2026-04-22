@@ -58,6 +58,7 @@ TEST_MODULES = [
     "test_secrets_encryption",
     "test_public_api_protections",
     "test_reply_features",
+    "test_new_safety_features",
 ]
 
 

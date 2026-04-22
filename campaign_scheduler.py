@@ -246,6 +246,75 @@ def load_due_campaign_leads(supabase: Client, campaign_id: str) -> list[dict]:
     return resp.data or []
 
 
+def filter_recent_cross_campaign_touches(
+    supabase: Client,
+    campaign_leads_rows: list[dict],
+    client_id: Optional[str],
+    min_days_between_sends: int = 7,
+) -> list[dict]:
+    """
+    Remove campaign_leads rows whose underlying lead was emailed in ANY OTHER
+    campaign within the last `min_days_between_sends` days.
+
+    Prevents the embarrassing case where the same prospect receives 3 emails
+    on the same Tuesday because they're in 3 parallel campaigns.
+
+    Reads `email_events` (event_type='sent') scoped to `client_id`.
+    If client_id is None, this is a no-op — we can't safely scope the query.
+
+    Set `min_days_between_sends=0` to disable.
+    """
+    if not campaign_leads_rows or not client_id or min_days_between_sends <= 0:
+        return campaign_leads_rows
+
+    from datetime import timedelta
+    cutoff_iso = (datetime.now(timezone.utc) - timedelta(days=min_days_between_sends)).isoformat()
+
+    lead_ids = [r.get("lead_id") for r in campaign_leads_rows if r.get("lead_id")]
+    current_campaign_id = campaign_leads_rows[0].get("campaign_id")
+    if not lead_ids:
+        return campaign_leads_rows
+
+    try:
+        resp = (
+            supabase.table("email_events")
+            .select("lead_id, campaign_id, timestamp")
+            .eq("client_id", client_id)
+            .eq("event_type", "sent")
+            .in_("lead_id", lead_ids)
+            .gte("timestamp", cutoff_iso)
+            .execute()
+        )
+        events = resp.data or []
+    except Exception as exc:
+        logger.warning("Cross-campaign dedup lookup failed (continuing): %s", exc)
+        return campaign_leads_rows
+
+    recently_touched: set[str] = set()
+    for ev in events:
+        ev_campaign = ev.get("campaign_id")
+        ev_lead = ev.get("lead_id")
+        if not ev_lead:
+            continue
+        # A send in the SAME campaign is not a cross-campaign touch.
+        if ev_campaign and ev_campaign == current_campaign_id:
+            continue
+        recently_touched.add(ev_lead)
+
+    if not recently_touched:
+        return campaign_leads_rows
+
+    allowed = [r for r in campaign_leads_rows if r.get("lead_id") not in recently_touched]
+    dropped = len(campaign_leads_rows) - len(allowed)
+    if dropped:
+        logger.info(
+            "Cross-campaign dedup: dropped %d/%d campaign_leads already emailed in another "
+            "campaign within %d days.",
+            dropped, len(campaign_leads_rows), min_days_between_sends,
+        )
+    return allowed
+
+
 def load_sequence_steps(supabase: Client, campaign_id: str) -> list[dict]:
     """
     Fetch all sequence steps for a campaign, ordered by step_number.
@@ -887,6 +956,16 @@ def process_campaign(
     due_leads = load_due_campaign_leads(supabase, campaign_id)
     if not due_leads:
         logger.info("Campaign '%s': no leads due for sending.", campaign_name)
+        return
+
+    # Cross-campaign dedup — drop leads already emailed in another campaign
+    # within the last N days (env-tunable per deployment, default 7).
+    _dedup_days = int(os.getenv("WARMR_CROSS_CAMPAIGN_DEDUP_DAYS", "7"))
+    due_leads = filter_recent_cross_campaign_touches(
+        supabase, due_leads, campaign.get("client_id"), min_days_between_sends=_dedup_days,
+    )
+    if not due_leads:
+        logger.info("Campaign '%s': all due leads blocked by cross-campaign dedup.", campaign_name)
         return
 
     logger.info(

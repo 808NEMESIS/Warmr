@@ -690,6 +690,13 @@ def scan_client_inbox_for_prospect_replies(
                     logger.error("reply_inbox insert failed for %s: %s", sender, exc)
                     continue
 
+                # Operator notification — never blocks the pipeline
+                try:
+                    from utils.notifier import notify_new_reply
+                    notify_new_reply(supabase, row)
+                except Exception as exc:
+                    logger.debug("notify_new_reply failed: %s", exc)
+
                 # Emit webhook event so CRM/Heatr can react
                 try:
                     event_type = "lead.interested" if signals.get("category") == "interested" else "lead.replied"

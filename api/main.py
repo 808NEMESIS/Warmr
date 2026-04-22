@@ -4623,8 +4623,52 @@ async def gdpr_export_lead(lead_id: str, client_id: ClientId) -> dict:
     }
 
 
+def _purge_lead_by_id(lead_id: str, email: str, client_id: str) -> dict:
+    """Shared GDPR Article 17 erasure. Returns per-table delete counts."""
+    deleted: dict = {}
+    for table, filter_col, filter_val in [
+        ("email_tracking",      "lead_id",    lead_id),
+        ("email_events",        "lead_id",    lead_id),
+        ("campaign_leads",      "lead_id",    lead_id),
+        ("bounce_log",          "lead_email", email),
+        ("unsubscribe_tokens",  "lead_id",    lead_id),
+        ("reply_inbox",         "lead_id",    lead_id),
+        ("enrichment_queue",    "lead_id",    lead_id),
+        ("sending_schedule",    "lead_email", email),
+        ("leads",               "id",         lead_id),
+    ]:
+        try:
+            # client_id filter is enforced for every multi-tenant table to
+            # prevent cross-tenant erasure via a guessed lead_id.
+            q = _supabase.table(table).delete().eq(filter_col, filter_val)
+            if table not in ("leads",):  # leads's row is identified by id only
+                q = q.eq("client_id", client_id)
+            else:
+                q = q.eq("client_id", client_id)
+            r = q.execute()
+            deleted[table] = len(r.data or [])
+        except Exception as exc:
+            deleted[table] = f"error: {exc}"
+
+    # Final gravestone: add to suppression so the same email can never be
+    # re-imported and contacted again.
+    try:
+        domain = email.split("@")[-1] if "@" in email else None
+        _supabase.table("suppression_list").insert({
+            "client_id": client_id,
+            "email":     email,
+            "domain":    domain,
+            "reason":    "manual",
+            "source":    "gdpr_purge",
+        }).execute()
+    except Exception:
+        pass  # Already suppressed — idempotent
+    return deleted
+
+
 @app.delete("/leads/{lead_id}/purge", tags=["GDPR"], status_code=200)
-async def gdpr_purge_lead(lead_id: str, client_id: ClientId) -> dict:
+@limiter.limit("30/hour")
+async def gdpr_purge_lead(request: Request, lead_id: str, client_id: ClientId) -> dict:
     """Permanently delete all data for a lead (GDPR Article 17 — right to erasure)."""
     lead = _supabase.table("leads").select("client_id, email").eq("id", lead_id).limit(1).execute()
     if not lead.data:
@@ -4632,38 +4676,64 @@ async def gdpr_purge_lead(lead_id: str, client_id: ClientId) -> dict:
     if lead.data[0]["client_id"] != client_id:
         raise HTTPException(status_code=403, detail="Access denied.")
 
-    email = lead.data[0]["email"]
-    deleted = {}
+    deleted = _purge_lead_by_id(lead_id, lead.data[0]["email"], client_id)
+    return {"purged": True, "lead_email": lead.data[0]["email"], "deleted_records": deleted}
 
-    # Delete from all related tables
-    for table, filter_col, filter_val in [
-        ("email_tracking", "lead_id", lead_id),
-        ("email_events", "lead_id", lead_id),
-        ("campaign_leads", "lead_id", lead_id),
-        ("bounce_log", "lead_email", email),
-        ("unsubscribe_tokens", "lead_id", lead_id),
-        ("leads", "id", lead_id),
-    ]:
-        try:
-            r = _supabase.table(table).delete().eq(filter_col, filter_val).execute()
-            deleted[table] = len(r.data or [])
-        except Exception as exc:
-            deleted[table] = f"error: {exc}"
 
-    # Add to suppression so this email is never contacted again
+@app.delete("/gdpr/erase", tags=["GDPR"], status_code=200)
+@limiter.limit("30/hour")
+async def gdpr_erase_by_email(request: Request, client_id: ClientId, email: str = Query(..., min_length=3)) -> dict:
+    """
+    Erase by email — the operator-friendly GDPR endpoint. If the prospect
+    emails you "please delete my data", you look up their email and call this.
+
+    Deletes every lead row matching this email + client_id (one prospect may
+    appear under multiple lead_ids if historically re-imported) and everything
+    joined via lead_id or lead_email.
+
+    Always returns 200 — even if the email was never in the system — so the
+    operator can give the prospect a consistent answer regardless of prior
+    state. Adds the email to suppression_list as a belt-and-braces.
+    """
+    email_lower = email.strip().lower()
+    if "@" not in email_lower:
+        raise HTTPException(status_code=422, detail="Not a valid email.")
+
+    leads_resp = (
+        _supabase.table("leads")
+        .select("id, email")
+        .eq("client_id", client_id)
+        .eq("email", email_lower)
+        .execute()
+    )
+    leads = leads_resp.data or []
+
+    totals: dict = {}
+    for lead in leads:
+        per = _purge_lead_by_id(lead["id"], lead["email"], client_id)
+        for table, count in per.items():
+            if isinstance(count, int):
+                totals[table] = totals.get(table, 0) + count
+
+    # Ensure suppression entry even if no lead was found
     try:
-        domain = email.split("@")[-1] if "@" in email else None
+        domain = email_lower.split("@")[-1]
         _supabase.table("suppression_list").insert({
             "client_id": client_id,
-            "email": email,
-            "domain": domain,
-            "reason": "manual",
-            "source": "gdpr_purge",
+            "email":     email_lower,
+            "domain":    domain,
+            "reason":    "manual",
+            "source":    "gdpr_erase",
         }).execute()
     except Exception:
-        pass  # Already suppressed
+        pass
 
-    return {"purged": True, "lead_email": email, "deleted_records": deleted}
+    return {
+        "erased":         True,
+        "email":          email_lower,
+        "leads_matched":  len(leads),
+        "deleted_records": totals,
+    }
 
 
 # ---------------------------------------------------------------------------
