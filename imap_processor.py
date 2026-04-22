@@ -546,6 +546,203 @@ def rescue_spam_for_inbox(
 
 
 # ---------------------------------------------------------------------------
+# Path 1c: Capture real prospect replies into reply_inbox
+# ---------------------------------------------------------------------------
+
+def scan_client_inbox_for_prospect_replies(
+    inbox: dict,
+    password: str,
+    supabase: Client,
+    warmup_emails: set[str],
+) -> int:
+    """
+    Scan a client inbox for UNREAD messages whose sender matches a known lead
+    of this client. For each match, store a row in reply_inbox (idempotent on
+    Message-ID), classify the reply, and emit a `lead.replied` webhook event.
+
+    Does NOT mark messages as read — the operator reads them in Gmail or via
+    Warmr's unified inbox. Dedup by RFC-5322 Message-ID keeps successive runs
+    from inserting the same reply twice.
+
+    Returns the number of new reply_inbox rows inserted.
+    """
+    inbox_id = inbox["id"]
+    client_id = inbox.get("client_id")
+    inbox_email = inbox["email"]
+    provider = inbox.get("provider") or "google"
+
+    if not client_id:
+        return 0
+
+    # Pull all lead emails for this client up front (one query vs N).
+    try:
+        leads_resp = (
+            supabase.table("leads")
+            .select("id, email")
+            .eq("client_id", client_id)
+            .execute()
+        )
+    except Exception as exc:
+        logger.warning("Lead fetch failed for client %s: %s", client_id, exc)
+        return 0
+
+    known_leads: dict[str, dict] = {
+        (row.get("email") or "").lower(): row for row in (leads_resp.data or []) if row.get("email")
+    }
+    if not known_leads:
+        return 0
+
+    imap_host = get_imap_server(provider)
+    saved = 0
+
+    try:
+        mail = imaplib.IMAP4_SSL(imap_host, IMAP_PORT)
+        mail.login(inbox_email, password)
+    except Exception as exc:
+        logger.error("Inbox %s: IMAP login failed (prospect-reply scan): %s", inbox_email, exc)
+        return 0
+
+    try:
+        mail.select("INBOX")
+        status, msg_ids = mail.search(None, "UNSEEN")
+        if status != "OK" or not msg_ids or not msg_ids[0]:
+            return 0
+
+        ids = msg_ids[0].split()
+        logger.debug("Inbox %s: %d unread messages to triage.", inbox_email, len(ids))
+
+        for msg_id in ids:
+            try:
+                status, msg_data = mail.fetch(msg_id, "(RFC822)")
+                if status != "OK" or not msg_data or not msg_data[0]:
+                    continue
+                raw = msg_data[0][1] if isinstance(msg_data[0], tuple) else b""
+                parsed = email_lib.message_from_bytes(raw)
+                sender = extract_sender_address(parsed)
+                if not sender or sender in warmup_emails:
+                    continue
+
+                lead = known_leads.get(sender)
+                if not lead:
+                    continue  # not a known prospect — ignore (newsletters, etc.)
+
+                subject = decode_header_value(parsed.get("Subject", ""))
+                body = get_email_body(parsed)
+                rfc_message_id = (parsed.get("Message-ID") or "").strip()
+                in_reply_to = (parsed.get("In-Reply-To") or "").strip()
+                references = (parsed.get("References") or "").strip()
+
+                # Dedup by Message-ID scoped to client_id
+                if rfc_message_id:
+                    try:
+                        existing = (
+                            supabase.table("reply_inbox")
+                            .select("id")
+                            .eq("client_id", client_id)
+                            .eq("message_id", rfc_message_id)
+                            .limit(1)
+                            .execute()
+                        )
+                        if existing.data:
+                            continue
+                    except Exception:
+                        pass
+
+                # Classify + meeting-intent + urgency via Claude Haiku (one call)
+                signals = {
+                    "category":       "other",
+                    "meeting_intent": False,
+                    "urgency":        "low",
+                    "rationale":      "",
+                }
+                try:
+                    from reply_classifier import classify_reply_with_signals
+                    signals = classify_reply_with_signals(
+                        body,
+                        reply_subject=subject,
+                        original_subject="",
+                        supabase_client=supabase,
+                        client_id=client_id,
+                    )
+                except Exception as exc:
+                    logger.warning("Reply classification failed for %s: %s", sender, exc)
+
+                ref_chain = " ".join(x for x in (references, in_reply_to) if x).strip()
+
+                row = {
+                    "client_id":         client_id,
+                    "lead_id":           lead["id"],
+                    "inbox_id":          inbox_id,
+                    "from_email":        sender,
+                    "subject":           subject,
+                    "body":              body[:20000] if body else "",
+                    "classification":    signals.get("category"),
+                    "meeting_intent":    bool(signals.get("meeting_intent")),
+                    "urgency":           signals.get("urgency"),
+                    "message_id":        rfc_message_id or None,
+                    "references_header": ref_chain or None,
+                }
+
+                try:
+                    supabase.table("reply_inbox").insert(row).execute()
+                    saved += 1
+                except Exception as exc:
+                    logger.error("reply_inbox insert failed for %s: %s", sender, exc)
+                    continue
+
+                # Emit webhook event so CRM/Heatr can react
+                try:
+                    event_type = "lead.interested" if signals.get("category") == "interested" else "lead.replied"
+                    supabase.table("webhook_events").insert({
+                        "client_id":   client_id,
+                        "event_type":  event_type,
+                        "payload": {
+                            "lead_id":        lead["id"],
+                            "email":          sender,
+                            "subject":        subject,
+                            "classification": signals.get("category"),
+                            "meeting_intent": bool(signals.get("meeting_intent")),
+                            "urgency":        signals.get("urgency"),
+                        },
+                        "dispatched":  False,
+                    }).execute()
+                except Exception as exc:
+                    logger.debug("webhook_events insert failed: %s", exc)
+
+                # Update lead status (replied / interested / unsubscribed)
+                try:
+                    cat = signals.get("category")
+                    if cat == "unsubscribe":
+                        new_status = "unsubscribed"
+                    elif cat == "interested":
+                        new_status = "interested"
+                    else:
+                        new_status = "replied"
+                    supabase.table("leads").update({"status": new_status}).eq("id", lead["id"]).eq("client_id", client_id).execute()
+                except Exception as exc:
+                    logger.debug("leads status update failed: %s", exc)
+
+                logger.info(
+                    "Stored prospect reply from %s → inbox %s (cat=%s, meeting=%s, urgency=%s).",
+                    sender, inbox_email, signals.get("category"),
+                    signals.get("meeting_intent"), signals.get("urgency"),
+                )
+
+            except Exception as exc:
+                logger.error("Inbox %s: error triaging msg %s: %s", inbox_email, msg_id, exc)
+
+    except Exception as exc:
+        logger.error("Inbox %s: prospect-reply scan failed: %s", inbox_email, exc)
+    finally:
+        try:
+            mail.logout()
+        except Exception:
+            pass
+
+    return saved
+
+
+# ---------------------------------------------------------------------------
 # Path 2: Warmup network account processing
 # ---------------------------------------------------------------------------
 
@@ -886,6 +1083,25 @@ def main() -> None:
             mail.logout()
         except Exception as exc:
             logger.error("Client inbox %s: reply-back processing error: %s", inbox_email, exc)
+
+    # ── Path 1c: Capture real prospect replies into reply_inbox ────────────
+    # After processing warmup chatter, any remaining unread message from a
+    # known lead is a real prospect reply — capture, classify, and surface it.
+    total_captured = 0
+    for inbox in raw_inboxes:
+        inbox_email = inbox["email"]
+        password = inbox_passwords.get(inbox_email.lower())
+        if not password:
+            continue
+        try:
+            captured = scan_client_inbox_for_prospect_replies(
+                inbox, password, supabase, warmup_emails,
+            )
+            total_captured += captured
+        except Exception as exc:
+            logger.error("Inbox %s: prospect-reply scan unhandled error: %s", inbox_email, exc)
+    if total_captured:
+        logger.info("Captured %d new prospect reply/replies into reply_inbox.", total_captured)
 
     # ── Path 2: Warmup network account processing ──────────────────────────
     if not warmup_network:

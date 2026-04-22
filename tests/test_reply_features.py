@@ -135,6 +135,214 @@ def test_analyze_intent_route_is_registered():
     assert (("POST",), "/replies/{reply_id}/analyze-intent") in paths
 
 
+# ── Prospect-reply capture (imap_processor.scan_client_inbox_for_prospect_replies) ──
+
+def _mk_raw_email(
+    from_addr: str,
+    subject: str = "Re: Samenwerking",
+    body: str = "Klinkt interessant, kunnen we volgende week bellen?",
+    message_id: str = "<abc123@prospect.example>",
+    in_reply_to: str = "<parent@warmr.example>",
+    references: str = "<root@warmr.example> <parent@warmr.example>",
+) -> bytes:
+    """Build a minimal RFC-822 email as bytes."""
+    lines = [
+        f"From: {from_addr}",
+        f"To: sender@example.nl",
+        f"Subject: {subject}",
+        f"Message-ID: {message_id}",
+        f"In-Reply-To: {in_reply_to}",
+        f"References: {references}",
+        "Content-Type: text/plain; charset=utf-8",
+        "",
+        body,
+    ]
+    return ("\r\n".join(lines)).encode("utf-8")
+
+
+class _FakeSbTable:
+    """Minimal Supabase query-builder stub with record/replay of writes."""
+
+    def __init__(self, store: dict):
+        self._store = store
+        self._table = None
+        self._filters: list[tuple[str, str, object]] = []
+        self._select_cols = "*"
+
+    def __call__(self, table: str):
+        self._table = table
+        self._filters = []
+        self._select_cols = "*"
+        return self
+
+    def select(self, cols="*", **kwargs):
+        self._select_cols = cols
+        return self
+
+    def eq(self, col, val):
+        self._filters.append(("eq", col, val))
+        return self
+
+    def limit(self, n):
+        return self
+
+    def execute(self):
+        class _R:
+            def __init__(self, data):
+                self.data = data
+        # Reads: leads table + reply_inbox dedup check
+        if self._table == "leads":
+            rows = [r for r in self._store.get("leads", [])
+                    if all(r.get(c) == v for op, c, v in self._filters)]
+            return _R(rows)
+        if self._table == "reply_inbox":
+            # Dedup check
+            rows = [r for r in self._store.get("reply_inbox_rows", [])
+                    if all(r.get(c) == v for op, c, v in self._filters)]
+            return _R(rows)
+        return _R([])
+
+    def insert(self, row):
+        key = "reply_inbox_rows" if self._table == "reply_inbox" else (
+            "webhook_events_rows" if self._table == "webhook_events" else "other_rows"
+        )
+        self._store.setdefault(key, []).append(row)
+        class _R:
+            def __init__(self, data):
+                self.data = data
+        return _Stub(_R([row]))
+
+    def update(self, patch):
+        # record update
+        self._store.setdefault("updates", []).append({"table": self._table, "patch": patch, "filters": list(self._filters)})
+        class _R:
+            def __init__(self, data):
+                self.data = data
+        return _Stub(_R([{}]))
+
+
+class _Stub:
+    """Helper: wraps an object so `.eq(...).execute()` returns it."""
+    def __init__(self, result):
+        self._result = result
+    def eq(self, *a, **kw):
+        return self
+    def execute(self):
+        return self._result
+
+
+class _FakeSb:
+    def __init__(self, store: dict):
+        self._store = store
+        self._qb = _FakeSbTable(store)
+    def table(self, name):
+        return self._qb(name)
+
+
+class _FakeMail:
+    """Minimal imaplib.IMAP4_SSL stub with one UNSEEN msg."""
+
+    def __init__(self, raw_bytes: bytes):
+        self._raw = raw_bytes
+
+    def login(self, u, p): return ("OK", [b"Logged in"])
+    def select(self, mailbox): return ("OK", [b"1"])
+    def search(self, charset, *criteria):
+        return ("OK", [b"1"])
+    def fetch(self, msg_id, spec):
+        return ("OK", [(b"1 (RFC822 {N}", self._raw)])
+    def store(self, *a, **kw): return ("OK", [b""])
+    def logout(self): return ("BYE", [b""])
+
+
+def test_scan_stores_known_lead_reply(monkeypatch):
+    import imap_processor
+
+    store = {
+        "leads": [{"id": "lead-1", "email": "prospect@example.nl", "client_id": "client-a"}],
+        "reply_inbox_rows": [],
+    }
+    sb = _FakeSb(store)
+
+    monkeypatch.setattr(imap_processor, "imaplib",
+        type("I", (), {"IMAP4_SSL": lambda host, port: _FakeMail(_mk_raw_email("prospect@example.nl"))}))
+    # Skip Claude classification — forces the fallback defaults
+    monkeypatch.setattr(imap_processor, "get_imap_server", lambda p: "imap.gmail.com")
+
+    def _stub_classify(*a, **kw):
+        return {"category": "interested", "meeting_intent": True, "urgency": "high", "rationale": ""}
+    import reply_classifier
+    monkeypatch.setattr(reply_classifier, "classify_reply_with_signals", _stub_classify)
+
+    inbox = {"id": "inbox-1", "email": "sender@example.nl", "provider": "google", "client_id": "client-a"}
+    saved = imap_processor.scan_client_inbox_for_prospect_replies(inbox, "pw", sb, warmup_emails=set())
+    assert saved == 1
+    rows = store["reply_inbox_rows"]
+    assert len(rows) == 1
+    assert rows[0]["from_email"] == "prospect@example.nl"
+    assert rows[0]["classification"] == "interested"
+    assert rows[0]["meeting_intent"] is True
+    assert rows[0]["urgency"] == "high"
+    assert rows[0]["message_id"] == "<abc123@prospect.example>"
+    # Threading chain: References + In-Reply-To
+    assert "<parent@warmr.example>" in (rows[0]["references_header"] or "")
+
+
+def test_scan_ignores_warmup_network_sender(monkeypatch):
+    import imap_processor
+    store = {
+        "leads": [{"id": "lead-1", "email": "warmup1@gmail.com", "client_id": "client-a"}],
+        "reply_inbox_rows": [],
+    }
+    sb = _FakeSb(store)
+    monkeypatch.setattr(imap_processor, "imaplib",
+        type("I", (), {"IMAP4_SSL": lambda host, port: _FakeMail(_mk_raw_email("warmup1@gmail.com"))}))
+    monkeypatch.setattr(imap_processor, "get_imap_server", lambda p: "imap.gmail.com")
+
+    inbox = {"id": "inbox-1", "email": "sender@example.nl", "provider": "google", "client_id": "client-a"}
+    saved = imap_processor.scan_client_inbox_for_prospect_replies(
+        inbox, "pw", sb, warmup_emails={"warmup1@gmail.com"},
+    )
+    # Warmup-network sender must not be captured even if erroneously in leads
+    assert saved == 0
+    assert store["reply_inbox_rows"] == []
+
+
+def test_scan_skips_unknown_sender(monkeypatch):
+    import imap_processor
+    store = {
+        "leads": [{"id": "lead-1", "email": "prospect@example.nl", "client_id": "client-a"}],
+        "reply_inbox_rows": [],
+    }
+    sb = _FakeSb(store)
+    monkeypatch.setattr(imap_processor, "imaplib",
+        type("I", (), {"IMAP4_SSL": lambda host, port: _FakeMail(_mk_raw_email("stranger@example.com"))}))
+    monkeypatch.setattr(imap_processor, "get_imap_server", lambda p: "imap.gmail.com")
+
+    inbox = {"id": "inbox-1", "email": "sender@example.nl", "provider": "google", "client_id": "client-a"}
+    saved = imap_processor.scan_client_inbox_for_prospect_replies(inbox, "pw", sb, warmup_emails=set())
+    assert saved == 0
+
+
+def test_scan_deduplicates_on_message_id(monkeypatch):
+    import imap_processor
+    already_stored_mid = "<abc123@prospect.example>"
+    store = {
+        "leads": [{"id": "lead-1", "email": "prospect@example.nl", "client_id": "client-a"}],
+        "reply_inbox_rows": [{"id": "existing", "client_id": "client-a", "message_id": already_stored_mid}],
+    }
+    sb = _FakeSb(store)
+    monkeypatch.setattr(imap_processor, "imaplib",
+        type("I", (), {"IMAP4_SSL": lambda host, port: _FakeMail(_mk_raw_email("prospect@example.nl", message_id=already_stored_mid))}))
+    monkeypatch.setattr(imap_processor, "get_imap_server", lambda p: "imap.gmail.com")
+
+    inbox = {"id": "inbox-1", "email": "sender@example.nl", "provider": "google", "client_id": "client-a"}
+    saved = imap_processor.scan_client_inbox_for_prospect_replies(inbox, "pw", sb, warmup_emails=set())
+    assert saved == 0
+    # No new insert beyond the pre-existing one
+    assert len(store["reply_inbox_rows"]) == 1
+
+
 # ── Migration content sanity ─────────────────────────────────────────────
 
 def test_migration_adds_required_columns():
