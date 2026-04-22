@@ -448,9 +448,13 @@ function renderDetail(r) {
             Sequence stoppen
           </button>
           <button class="btn btn-ghost btn-sm" onclick="markUnread('${r.id}')">Als ongelezen markeren</button>
+          <button class="btn btn-ghost btn-sm" onclick="analyzeIntent('${r.id}')" style="color:var(--primary)">🧠 Intent-analyse</button>
           <button class="btn btn-ghost btn-sm" onclick="aiSuggestReplies('${r.id}')" style="margin-left:auto;color:var(--primary)">✦ AI antwoord suggesties</button>
+          <button class="btn btn-primary btn-sm" onclick="openReplyComposer('${r.id}')">↩ Stuur reply</button>
         </div>
+        <div id="intent-analysis-${r.id}" style="display:none;margin-top:.75rem"></div>
         <div id="ai-replies-${r.id}" style="display:none;margin-top:.75rem"></div>
+        <div id="reply-composer-${r.id}" style="display:none;margin-top:.75rem"></div>
       </div>
 
       <!-- Sidebar -->
@@ -566,6 +570,95 @@ async function updateClassification(id, cls) {
     renderList();
     toast('Classificatie bijgewerkt','success');
   } catch(e) { toast(e.message,'error'); }
+}
+
+async function analyzeIntent(replyId) {
+  var box = document.getElementById('intent-analysis-' + replyId);
+  if (!box) return;
+  box.style.display = 'block';
+  box.innerHTML = '<div class="text-sm text-muted" style="padding:.5rem">Psychologische analyse draait…</div>';
+  try {
+    var res = await api('/replies/' + replyId + '/analyze-intent', { method: 'POST' });
+    var conf = Math.round((res.confidence || 0) * 100);
+    var badge = function(label, val) {
+      return '<div style="display:inline-flex;flex-direction:column;padding:.375rem .625rem;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-right:.5rem;margin-bottom:.375rem;min-width:8rem">' +
+        '<span style="font-size:.6875rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.03em">' + label + '</span>' +
+        '<span style="font-size:.8125rem;font-weight:700;color:var(--text)">' + (val || '—') + '</span>' +
+        '</div>';
+    };
+    box.innerHTML =
+      '<div style="padding:1rem;border:1.5px solid var(--primary);border-radius:10px;background:var(--surface)">' +
+        '<div style="font-weight:700;margin-bottom:.625rem;color:var(--primary);display:flex;justify-content:space-between">' +
+          '<span>🧠 Psychologische read</span>' +
+          '<span style="font-size:.75rem;color:var(--text-muted)">Vertrouwen: ' + conf + '%</span>' +
+        '</div>' +
+        badge('Objection', res.objection_type) +
+        badge('Emotion', res.emotion) +
+        badge('Influence-lever', res.cialdini_principle) +
+        '<div style="margin-top:.75rem;padding:.625rem;background:var(--bg);border-radius:6px">' +
+          '<div style="font-size:.75rem;color:var(--text-muted);margin-bottom:.25rem">💡 Mijn suggestie</div>' +
+          '<div style="font-size:.875rem;color:var(--text);line-height:1.5">' + (res.suggested_approach || '—') + '</div>' +
+        '</div>' +
+        (res.recommended_snippet ? (
+          '<div style="margin-top:.5rem;padding:.625rem;background:var(--bg);border-radius:6px">' +
+            '<div style="font-size:.75rem;color:var(--text-muted);margin-bottom:.25rem;display:flex;justify-content:space-between">' +
+              '<span>✏️ Concept-reply</span>' +
+              '<button class="btn btn-ghost btn-sm" style="font-size:.7rem" onclick="useSnippet(\'' + replyId + '\',\'' + res.recommended_snippet.replace(/'/g,"\\'").replace(/\n/g,'\\n') + '\')">Gebruik</button>' +
+            '</div>' +
+            '<div style="font-size:.8125rem;color:var(--text);line-height:1.5;white-space:pre-wrap">' + res.recommended_snippet + '</div>' +
+          '</div>'
+        ) : '') +
+        (res.rationale ? '<div style="margin-top:.5rem;font-size:.75rem;color:var(--text-muted);font-style:italic">' + res.rationale + '</div>' : '') +
+      '</div>';
+  } catch (e) {
+    box.innerHTML = '<div class="text-sm text-muted">Analyse mislukt: ' + e.message + '</div>';
+  }
+}
+
+function openReplyComposer(replyId, prefill) {
+  var box = document.getElementById('reply-composer-' + replyId);
+  if (!box) return;
+  box.style.display = 'block';
+  var escaped = (prefill || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  box.innerHTML =
+    '<div style="padding:1rem;border:1.5px solid var(--border);border-radius:10px;background:var(--surface)">' +
+      '<div style="font-weight:700;margin-bottom:.5rem">↩ Reply naar prospect</div>' +
+      '<textarea id="reply-body-' + replyId + '" rows="6" style="width:100%;padding:.625rem;border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:.875rem;resize:vertical">' + escaped + '</textarea>' +
+      '<div style="display:flex;gap:.5rem;margin-top:.625rem;justify-content:flex-end">' +
+        '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'reply-composer-' + replyId + '\').style.display=\'none\'">Annuleer</button>' +
+        '<button class="btn btn-primary btn-sm" onclick="sendReply(\'' + replyId + '\')">Verstuur via SMTP</button>' +
+      '</div>' +
+    '</div>';
+  setTimeout(function() {
+    var ta = document.getElementById('reply-body-' + replyId);
+    if (ta) ta.focus();
+  }, 50);
+}
+
+function useSnippet(replyId, snippet) {
+  openReplyComposer(replyId, snippet);
+}
+
+async function sendReply(replyId) {
+  var ta = document.getElementById('reply-body-' + replyId);
+  if (!ta || !ta.value.trim()) { alert('Lege reply kan niet verstuurd worden.'); return; }
+  var body = ta.value;
+  if (!confirm('Verstuur deze reply direct via SMTP?')) return;
+  try {
+    var res = await api('/replies/' + replyId + '/send', {
+      method: 'POST',
+      body: JSON.stringify({ body: body }),
+    });
+    var box = document.getElementById('reply-composer-' + replyId);
+    if (box) {
+      box.innerHTML =
+        '<div style="padding:.875rem;border:1.5px solid #4caf50;border-radius:10px;background:var(--surface);color:#2e7d32">' +
+        '✓ Verstuurd naar ' + res.sent_to + (res.threaded ? ' (in bestaande thread)' : ' (nieuwe thread)') +
+        '</div>';
+    }
+  } catch (e) {
+    alert('Send mislukt: ' + e.message);
+  }
 }
 
 async function aiSuggestReplies(replyId) {

@@ -136,3 +136,116 @@ Return ONLY the category name, nothing else."""
     except Exception as exc:
         logger.error("Reply classification failed: %s", exc)
         return "other"
+
+
+# ---------------------------------------------------------------------------
+# Richer classifier — returns category + meeting_intent + urgency in one call.
+# Used by imap_processor when it stores a reply. Falls back to the legacy
+# classify_reply() on any failure so the pipeline is never blocked.
+# ---------------------------------------------------------------------------
+
+URGENCIES = ("low", "medium", "high")
+
+
+def classify_reply_with_signals(
+    reply_body: str,
+    reply_subject: str = "",
+    original_subject: str = "",
+    supabase_client=None,
+    client_id: str | None = None,
+) -> dict:
+    """
+    Single-call enrichment of an incoming reply.
+
+    Returns:
+        {
+          "category":       one of CATEGORIES,
+          "meeting_intent": bool,   # explicit booking / calendar signal
+          "urgency":        "low" | "medium" | "high",
+          "rationale":      short human-readable string,
+        }
+
+    Costs one Claude Haiku call. Falls back to `classify_reply()` if the
+    model call fails — in that case meeting_intent=False, urgency="low".
+    """
+    fallback = {
+        "category":       "other",
+        "meeting_intent": False,
+        "urgency":        "low",
+        "rationale":      "",
+    }
+
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        fallback["category"] = classify_reply(reply_body, reply_subject, original_subject,
+                                              supabase_client, client_id)
+        return fallback
+
+    prompt = f"""Analyze this B2B email reply on three dimensions and return strict JSON.
+
+Subject: {reply_subject}
+Original subject: {original_subject}
+
+Reply body:
+\"\"\"
+{reply_body[:1200]}
+\"\"\"
+
+Return ONLY this JSON shape (no markdown, no prose):
+{{
+  "category": one of ["interested","not_interested","out_of_office","referral","unsubscribe","question","other"],
+  "meeting_intent": true|false,
+  "urgency": "low"|"medium"|"high",
+  "rationale": "one short sentence"
+}}
+
+Rules:
+- meeting_intent=true when the reply explicitly asks for a call/meeting/demo, shares availability, or requests a booking link.
+- urgency="high" only for explicit time pressure ("this week", "asap", "today"), "medium" if the sender expects a reply soon, else "low".
+- category "interested" and meeting_intent=true can coexist."""
+
+    try:
+        import json as _json
+        if supabase_client:
+            from utils.cost_tracker import tracked_claude_call
+            client = anthropic.Anthropic(api_key=api_key)
+            message = tracked_claude_call(
+                client, supabase_client,
+                model="claude-haiku-4-5-20251001",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=250,
+                context="reply_classification_signals",
+                client_id=client_id,
+            )
+        else:
+            client = anthropic.Anthropic(api_key=api_key)
+            message = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=250,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+        raw = message.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = "\n".join(raw.split("\n")[1:-1])
+        parsed = _json.loads(raw)
+
+        category = str(parsed.get("category", "other")).lower()
+        if category not in CATEGORIES:
+            category = "other"
+        urgency = str(parsed.get("urgency", "low")).lower()
+        if urgency not in URGENCIES:
+            urgency = "low"
+
+        return {
+            "category":       category,
+            "meeting_intent": bool(parsed.get("meeting_intent", False)),
+            "urgency":        urgency,
+            "rationale":      str(parsed.get("rationale", ""))[:300],
+        }
+
+    except Exception as exc:
+        logger.warning("Signal-rich classification failed (%s) — falling back to legacy path.", exc)
+        fallback["category"] = classify_reply(reply_body, reply_subject, original_subject,
+                                              supabase_client, client_id)
+        return fallback

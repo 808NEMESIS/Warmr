@@ -7,8 +7,44 @@ Usage:
 """
 
 import importlib.util
+import inspect
+import os
 import sys
 from pathlib import Path
+
+
+class _MiniMonkeypatch:
+    """Minimal pytest-monkeypatch emulator for run_all.py.
+
+    Supports the subset of the pytest API used by our tests:
+      setenv, delenv, setattr (target, name, value).
+    Call .undo() to restore.
+    """
+
+    def __init__(self) -> None:
+        self._env_undo: list[tuple[str, str | None]] = []
+        self._attr_undo: list[tuple[object, str, object]] = []
+
+    def setenv(self, k: str, v: str) -> None:
+        self._env_undo.append((k, os.environ.get(k)))
+        os.environ[k] = v
+
+    def delenv(self, k: str, raising: bool = True) -> None:
+        self._env_undo.append((k, os.environ.get(k)))
+        os.environ.pop(k, None)
+
+    def setattr(self, target, name, value=None, raising: bool = True) -> None:
+        self._attr_undo.append((target, name, getattr(target, name, None)))
+        setattr(target, name, value)
+
+    def undo(self) -> None:
+        for k, v in self._env_undo:
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        for t, n, v in self._attr_undo:
+            setattr(t, n, v)
 
 
 TESTS_DIR = Path(__file__).resolve().parent
@@ -21,6 +57,7 @@ TEST_MODULES = [
     "test_bounce_handler",
     "test_secrets_encryption",
     "test_public_api_protections",
+    "test_reply_features",
 ]
 
 
@@ -43,14 +80,22 @@ def run_module(name: str) -> tuple[int, int]:
             if not callable(fn):
                 continue
             total += 1
+            needs_mp = "monkeypatch" in inspect.signature(fn).parameters
+            mp = _MiniMonkeypatch() if needs_mp else None
             try:
-                fn()
+                if mp is not None:
+                    fn(mp)
+                else:
+                    fn()
                 passed += 1
                 print(f"  \u2713 {attr}")
             except AssertionError as e:
                 print(f"  \u2717 {attr}: {e}")
             except Exception as e:
                 print(f"  \u2717 {attr}: {type(e).__name__}: {e}")
+            finally:
+                if mp is not None:
+                    mp.undo()
     print(f"  → {passed}/{total}")
     return passed, total
 

@@ -693,6 +693,286 @@ async def unread_count(client_id: ClientId) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Reply → intent-psychology analysis (feature #1)
+# ---------------------------------------------------------------------------
+
+@app.post("/replies/{reply_id}/analyze-intent", tags=["Replies"])
+@limiter.limit("20/hour")
+async def analyze_reply_intent(request: Request, reply_id: str, client_id: ClientId) -> dict:
+    """
+    Consumer-psychology analysis of a single incoming reply.
+
+    Returns a structured read:
+      - objection_type       what kind of objection/resistance (if any)
+      - emotion              underlying emotional tone
+      - cialdini_principle   which influence principle is most relevant
+      - suggested_approach   concrete next-step recommendation for the operator
+      - recommended_snippet  a short reply snippet to start from
+      - confidence           0.0 – 1.0
+
+    Result is cached on reply_inbox.intent_analysis. Rerun overwrites.
+
+    Rate-limited to 20/hour to keep Claude spend predictable (Opus call).
+    """
+    # Ownership check
+    row_resp = (
+        _supabase.table("reply_inbox")
+        .select("id, client_id, from_email, subject, body, classification")
+        .eq("id", reply_id)
+        .limit(1)
+        .execute()
+    )
+    rows = row_resp.data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Reply not found.")
+    row = rows[0]
+    if row.get("client_id") != client_id:
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    body_text = (row.get("body") or "").strip()
+    if not body_text:
+        raise HTTPException(status_code=422, detail="Reply has no body to analyze.")
+
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured.")
+
+    prompt = f"""You are analyzing a B2B cold-outreach reply through a consumer-psychology lens.
+
+Reply from {row.get('from_email')} (subject: {row.get('subject')}):
+\"\"\"
+{body_text[:1500]}
+\"\"\"
+
+Prior classification (may be empty): {row.get('classification') or 'unknown'}
+
+Return ONLY strict JSON with the following shape (no markdown, no prose):
+
+{{
+  "objection_type":      one of ["price","timing","authority","trust","fit","no_need","already_solved","vague","none"],
+  "emotion":             one of ["curiosity","skepticism","annoyance","enthusiasm","politeness","frustration","indifference","urgency"],
+  "cialdini_principle":  one of ["reciprocity","commitment","social_proof","authority","liking","scarcity","unity","none"],
+  "suggested_approach":  one sentence on how to move this prospect forward,
+  "recommended_snippet": a 40–80 word reply draft in the same language as the incoming reply,
+  "confidence":          a float 0.0–1.0,
+  "rationale":           one sentence explaining the emotion + cialdini choice
+}}
+
+Guidance:
+- objection_type="none" if the reply is positive/booking-oriented.
+- cialdini_principle is the principle MOST useful to deploy in the response, not what the reply expresses.
+- confidence reflects how clear the signals are; ≤0.5 on very short/ambiguous replies."""
+
+    try:
+        import anthropic as _anthropic, json as _json
+        client = _anthropic.Anthropic(api_key=api_key)
+        message = client.messages.create(
+            model="claude-opus-4-7",
+            max_tokens=900,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = message.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = "\n".join(raw.split("\n")[1:-1])
+        analysis = _json.loads(raw)
+    except Exception as exc:
+        logger.exception("Intent analysis failed for reply %s", reply_id)
+        raise HTTPException(status_code=500, detail=f"Intent analysis failed: {exc}")
+
+    try:
+        _supabase.table("reply_inbox").update({
+            "intent_analysis":    analysis,
+            "intent_analyzed_at": _now_utc(),
+        }).eq("id", reply_id).eq("client_id", client_id).execute()
+    except Exception as exc:
+        logger.warning("Failed to persist intent analysis for %s: %s", reply_id, exc)
+
+    return analysis
+
+
+# ---------------------------------------------------------------------------
+# Reply → send reply to the prospect via SMTP (feature #3)
+# ---------------------------------------------------------------------------
+
+from pydantic import BaseModel as _BaseModel, Field as _Field  # noqa: E402
+
+
+class ReplySendIn(_BaseModel):
+    """Payload for POST /replies/{id}/send."""
+    body:       str = _Field(..., min_length=1, max_length=20000)
+    subject:    Optional[str] = None   # defaults to "Re: <original subject>"
+    mark_replied: bool = True          # also marks reply_sent_at + is_read=True
+
+
+@app.post("/replies/{reply_id}/send", tags=["Replies"])
+@limiter.limit("60/hour")
+async def send_reply(
+    request: Request,
+    reply_id: str,
+    payload: ReplySendIn,
+    client_id: ClientId,
+) -> dict:
+    """
+    Send a reply from the sending inbox (which originally received the prospect's
+    reply) back to the prospect via SMTP. Preserves threading when message_id is
+    available; falls back to a fresh thread otherwise.
+
+    Guardrails:
+      - Rate limit 60/hour per client (≈ 1/min — human typing speed).
+      - Caller must own the reply_inbox row.
+      - Inbox must still be non-retired.
+      - Suppression list is checked — prospect on suppression → 409.
+      - Empty subject defaults to "Re: <original subject>".
+    """
+    row_resp = (
+        _supabase.table("reply_inbox")
+        .select("id, client_id, from_email, subject, inbox_id, lead_id, campaign_id, message_id, references_header")
+        .eq("id", reply_id)
+        .limit(1)
+        .execute()
+    )
+    rows = row_resp.data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Reply not found.")
+    row = rows[0]
+    if row.get("client_id") != client_id:
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    prospect_email = (row.get("from_email") or "").strip()
+    if not prospect_email:
+        raise HTTPException(status_code=422, detail="Original reply has no sender address.")
+
+    # Suppression check
+    try:
+        supp = (
+            _supabase.table("suppression_list")
+            .select("id")
+            .eq("client_id", client_id)
+            .eq("email", prospect_email.lower())
+            .limit(1)
+            .execute()
+        )
+        if supp.data:
+            raise HTTPException(status_code=409, detail="Prospect is on the suppression list.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("Suppression check failed (continuing): %s", exc)
+
+    # Fetch the sending inbox metadata
+    inbox_id = row.get("inbox_id")
+    if not inbox_id:
+        raise HTTPException(status_code=422, detail="Reply has no associated inbox.")
+    ib_resp = (
+        _supabase.table("inboxes")
+        .select("id, email, domain, provider, status")
+        .eq("id", inbox_id)
+        .eq("client_id", client_id)
+        .limit(1)
+        .execute()
+    )
+    ib_rows = ib_resp.data or []
+    if not ib_rows:
+        raise HTTPException(status_code=404, detail="Sending inbox not found.")
+    inbox = ib_rows[0]
+    if inbox.get("status") == "retired":
+        raise HTTPException(status_code=409, detail="Sending inbox is retired.")
+
+    # Load SMTP password from env (never from DB — see utils/secrets_vault docs)
+    sender_email = inbox["email"]
+    sender_email_lower = sender_email.lower()
+    sender_password = ""
+    i = 1
+    while True:
+        env_email = os.getenv(f"INBOX_{i}_EMAIL")
+        if not env_email:
+            break
+        if env_email.strip().lower() == sender_email_lower:
+            sender_password = (os.getenv(f"INBOX_{i}_PASSWORD") or "").strip()
+            break
+        i += 1
+    if not sender_password:
+        raise HTTPException(
+            status_code=500,
+            detail=f"No SMTP credentials configured in .env for {sender_email}.",
+        )
+
+    # Build subject — preserve "Re:" prefix only once
+    original_subject = (row.get("subject") or "").strip()
+    subject = (payload.subject or "").strip() or original_subject
+    if not subject.lower().startswith("re:"):
+        subject = f"Re: {subject}" if subject else "Re:"
+
+    # Build MIME message with threading headers when available
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.utils import make_msgid, formatdate
+
+    msg = MIMEMultipart("alternative")
+    msg["From"] = sender_email
+    msg["To"] = prospect_email
+    msg["Subject"] = subject
+    msg["Date"] = formatdate(localtime=False)
+    msg["Message-ID"] = make_msgid(domain=inbox.get("domain") or sender_email.split("@")[-1])
+
+    original_msg_id = (row.get("message_id") or "").strip()
+    references = (row.get("references_header") or "").strip()
+    if original_msg_id:
+        msg["In-Reply-To"] = original_msg_id
+        msg["References"] = (references + " " + original_msg_id).strip() if references else original_msg_id
+
+    msg.attach(MIMEText(payload.body, "plain", "utf-8"))
+
+    # Pick SMTP host from provider mapping
+    from warmup_engine import get_smtp_server, SMTP_PORT
+    smtp_host = get_smtp_server(inbox.get("provider") or "google")
+
+    try:
+        with smtplib.SMTP_SSL(smtp_host, SMTP_PORT) as server:
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, [prospect_email], msg.as_string())
+    except smtplib.SMTPAuthenticationError as exc:
+        logger.error("SMTP auth failed for %s: %s", sender_email, exc)
+        raise HTTPException(status_code=502, detail="SMTP authentication failed.")
+    except Exception as exc:
+        logger.exception("SMTP send failed for reply %s", reply_id)
+        raise HTTPException(status_code=502, detail=f"SMTP send failed: {exc}")
+
+    # Record the outbound reply + optionally mark the thread handled
+    update: dict = {
+        "reply_sent_at":      _now_utc(),
+        "reply_sent_body":    payload.body,
+        "reply_sent_subject": subject,
+    }
+    if payload.mark_replied:
+        update["is_read"] = True
+    try:
+        _supabase.table("reply_inbox").update(update).eq("id", reply_id).eq("client_id", client_id).execute()
+    except Exception as exc:
+        logger.warning("Reply sent but failed to update reply_inbox row: %s", exc)
+
+    # Also log to warmup_logs so the activity shows up in dashboards
+    try:
+        _supabase.table("warmup_logs").insert({
+            "inbox_id":          inbox_id,
+            "action":             "reply_sent",
+            "counterpart_email":  prospect_email,
+            "subject":            subject,
+            "notes":              payload.body[:500],
+        }).execute()
+    except Exception as exc:
+        logger.debug("warmup_logs insert failed: %s", exc)
+
+    return {
+        "sent_to":    prospect_email,
+        "subject":    subject,
+        "from_inbox": sender_email,
+        "threaded":   bool(original_msg_id),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Warmup stats
 # ---------------------------------------------------------------------------
 
