@@ -20,6 +20,7 @@ TEST_MODULES = [
     "test_heatr_integration",
     "test_bounce_handler",
     "test_secrets_encryption",
+    "test_public_api_protections",
 ]
 
 

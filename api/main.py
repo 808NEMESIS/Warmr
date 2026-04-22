@@ -44,10 +44,9 @@ from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import jwt as jose_jwt
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
-from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from supabase import Client, create_client
@@ -114,23 +113,7 @@ _ALLOWED_ORIGINS: list[str] = (
 # Rate limiter — per-client (JWT) when authenticated, per-IP otherwise
 # ---------------------------------------------------------------------------
 
-def _rate_limit_key(request: Request) -> str:
-    """Key rate limits by client_id when JWT is present, else by IP."""
-    auth = request.headers.get("authorization", "")
-    if auth.startswith("Bearer "):
-        try:
-            # Decode WITHOUT verifying — we just need the sub claim for keying.
-            # Actual validation happens in auth dependencies.
-            payload = jose_jwt.get_unverified_claims(auth[7:])
-            sub = payload.get("sub")
-            if sub:
-                return f"client:{sub}"
-        except Exception:
-            pass
-    return f"ip:{get_remote_address(request)}"
-
-
-limiter = Limiter(key_func=_rate_limit_key, default_limits=["120/minute"])
+from api.rate_limiter import limiter
 
 # ---------------------------------------------------------------------------
 # Security headers middleware

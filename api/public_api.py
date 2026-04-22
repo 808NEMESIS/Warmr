@@ -36,6 +36,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
 
 from api.models import WebhookPatch
+from api.rate_limiter import limiter
 from supabase import create_client, Client
 
 logger = logging.getLogger(__name__)
@@ -327,7 +328,9 @@ def _emit_event(sb: Client, client_id: str, event_type: str, payload: dict) -> N
 # ===========================================================================
 
 @public_router.post("/leads", status_code=201)
+@limiter.limit("30/minute")
 async def public_create_leads(
+    request: Request,
     body: dict,
     ctx: ApiCtx,
     background_tasks: BackgroundTasks,
@@ -534,8 +537,12 @@ async def _insert_leads_bulk(
 
 # Always-bulk endpoint — unambiguous shape, preferred for new integrations.
 @public_router.post("/leads/bulk", status_code=201)
+@limiter.limit("10/minute")
 async def public_create_leads_bulk(
-    body: BulkLeadIn, ctx: ApiCtx, background_tasks: BackgroundTasks
+    request: Request,
+    body: BulkLeadIn,
+    ctx: ApiCtx,
+    background_tasks: BackgroundTasks,
 ) -> dict:
     return await _insert_leads_bulk(body, ctx, background_tasks)
 
@@ -666,15 +673,60 @@ async def public_list_inboxes(
     return {"inboxes": resp.data or []}
 
 
+# In-process cache for inbox-availability reads. 30-second TTL — the
+# daily_sent counter only changes when the warmup/campaign engines actually
+# send, which happens at most a few times per minute per inbox.
+# Integrations that poll this endpoint (e.g. Heatr before each lead push)
+# would otherwise hit Supabase once per call.
+_AVAILABILITY_CACHE: dict[str, tuple[float, dict]] = {}
+_AVAILABILITY_TTL_SECONDS = 30.0
+
+
+def _availability_cache_get(key: str) -> Optional[dict]:
+    import time
+    entry = _AVAILABILITY_CACHE.get(key)
+    if not entry:
+        return None
+    inserted_at, value = entry
+    if time.monotonic() - inserted_at > _AVAILABILITY_TTL_SECONDS:
+        _AVAILABILITY_CACHE.pop(key, None)
+        return None
+    return value
+
+
+def _availability_cache_set(key: str, value: dict) -> None:
+    import time
+    _AVAILABILITY_CACHE[key] = (time.monotonic(), value)
+    # Opportunistic eviction — keep the cache bounded even without a TTL sweep
+    if len(_AVAILABILITY_CACHE) > 2000:
+        now = time.monotonic()
+        stale = [
+            k for k, (t, _) in _AVAILABILITY_CACHE.items()
+            if now - t > _AVAILABILITY_TTL_SECONDS
+        ]
+        for k in stale:
+            _AVAILABILITY_CACHE.pop(k, None)
+
+
 @public_router.get("/inboxes/{inbox_id}/availability")
 async def public_inbox_availability(inbox_id: str, ctx: ApiCtx) -> dict:
     """
     Current sending capacity for a single inbox. `daily_remaining` is the
     number of sends still allowed today across warmup + campaigns combined.
 
+    Response is cached in-process for 30 seconds per (client, inbox) pair.
+    Poll at most 2 req/minute per inbox to stay within the cache — beyond
+    that you'll still get fresh reads but pay a Supabase round-trip.
+
     Required permission: read_analytics
     """
     ctx.require("read_analytics")
+
+    cache_key = f"{ctx.client_id}:{inbox_id}"
+    cached = _availability_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     sb = _sb()
     resp = (
         sb.table("inboxes")
@@ -695,7 +747,7 @@ async def public_inbox_availability(inbox_id: str, ctx: ApiCtx) -> dict:
     daily_sent      = int(inbox.get("daily_sent") or 0)
     daily_remaining = max(0, daily_cap - daily_sent)
 
-    return {
+    result = {
         "id":                inbox["id"],
         "email":             inbox.get("email"),
         "status":            inbox.get("status"),
@@ -704,6 +756,8 @@ async def public_inbox_availability(inbox_id: str, ctx: ApiCtx) -> dict:
         "daily_sent":        daily_sent,
         "daily_remaining":   daily_remaining,
     }
+    _availability_cache_set(cache_key, result)
+    return result
 
 
 # ===========================================================================
