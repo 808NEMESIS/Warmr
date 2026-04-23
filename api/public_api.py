@@ -69,6 +69,7 @@ VALID_EVENTS = frozenset(
         "lead.bounced",
         "lead.unsubscribed",
         "lead.enriched",
+        "lead.clicked",
         "inbox.warmup_complete",
         "campaign.completed",
     }

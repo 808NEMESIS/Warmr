@@ -5865,6 +5865,20 @@ async def track_click(token: str, url: str = Query(...), request: Request = None
                 add_engagement(_supabase, lead_id, "clicked")
             except Exception:
                 pass
+            # Hot-signal notification + lead.clicked webhook event.
+            # Throttled per-lead so spam-clicks don't flood the operator.
+            try:
+                from utils.notifier import notify_lead_clicked
+                notify_lead_clicked(
+                    _supabase,
+                    client_id=client_id,
+                    lead_id=lead_id,
+                    lead_email=lead_email,
+                    campaign_id=campaign_id,
+                    clicked_url=url,
+                )
+            except Exception as exc:
+                logger.debug("notify_lead_clicked failed for %s: %s", token[:20], exc)
     except Exception as exc:
         logger.debug("Click tracking error for token %s: %s", token[:20], exc)
     return RedirectResponse(url=url, status_code=302)

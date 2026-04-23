@@ -158,6 +158,64 @@ def notify_operator(
     return _send_via_resend(to_email, title, html_body)
 
 
+def notify_lead_clicked(
+    sb,
+    client_id: str,
+    lead_id: str,
+    lead_email: str,
+    campaign_id: Optional[str],
+    clicked_url: str,
+) -> bool:
+    """Ping the operator the FIRST time a lead clicks a tracked link.
+
+    Deduped per (client_id, lead_id) via the throttle window — a prospect
+    hammering 5 links in a minute gets one email, not five. Subsequent clicks
+    the same day are absorbed into the dashboard badge count only.
+
+    Always emits a lead.clicked webhook event so CRM/Heatr can react even
+    when the notifier itself is throttled or muted.
+    """
+    # Always emit the webhook event (separate concern from operator email)
+    try:
+        sb.table("webhook_events").insert({
+            "client_id":  client_id,
+            "event_type": "lead.clicked",
+            "payload": {
+                "lead_id":     lead_id,
+                "email":       lead_email,
+                "campaign_id": campaign_id,
+                "clicked_url": clicked_url,
+            },
+            "dispatched": False,
+        }).execute()
+    except Exception as exc:
+        logger.debug("webhook_events insert for lead.clicked failed: %s", exc)
+
+    # Kind is scoped to the lead so different leads don't throttle each other.
+    kind = f"lead_clicked:{lead_id}"
+    domain = clicked_url.split("/")[2] if "://" in clicked_url and "/" in clicked_url.split("://", 1)[1] else clicked_url[:60]
+    title = f"🎯 {lead_email} klikte op je link"
+    html = f"""
+    <div style="font-family:system-ui,sans-serif;max-width:640px;margin:0 auto;padding:24px">
+      <h2 style="margin:0 0 12px">🎯 Hot signaal: click</h2>
+      <p style="color:#333;line-height:1.5">
+        <strong>{lead_email}</strong> heeft zojuist op een link geklikt in je campagne.
+        Een klik is een sterker koopsignaal dan een open — opvolgen binnen 24 uur
+        levert meetbaar meer meetings op.
+      </p>
+      <div style="border:1px solid #e5e7eb;border-radius:8px;padding:16px;background:#fafafa;margin:16px 0">
+        <div style="font-size:12px;color:#666">Bestemming</div>
+        <div style="word-break:break-all;font-size:13px"><a href="{clicked_url}">{domain}</a></div>
+      </div>
+      <p style="color:#666;font-size:12px">
+        Volgende klikken vandaag van dezelfde lead worden samengevat in je dashboard
+        (geen extra email).
+      </p>
+    </div>
+    """.strip()
+    return notify_operator(sb, client_id, kind, title, html, throttle=True)
+
+
 def notify_new_reply(sb, reply_row: dict) -> bool:
     """Compose and send a 'new prospect reply' operator ping.
 

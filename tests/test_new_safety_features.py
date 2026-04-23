@@ -248,6 +248,56 @@ def test_notify_new_reply_composes_expected_title():
     assert "prospect@example.nl" in notif_msgs[0]
 
 
+# ── Click notification ───────────────────────────────────────────────────
+
+def test_notify_lead_clicked_emits_webhook_and_throttled_ping(monkeypatch):
+    """Webhook event always fires; operator email is throttled per-lead."""
+    import utils.notifier as nt
+    monkeypatch.setenv("WARMR_NOTIFY_MUTE", "1")
+    import importlib
+    importlib.reload(nt)
+
+    sb = _NotifyFakeSb(settings_email="ops@client.com")
+    ok = nt.notify_lead_clicked(
+        sb, client_id="client-a", lead_id="lead-1",
+        lead_email="prospect@example.nl",
+        campaign_id="camp-1",
+        clicked_url="https://example.nl/landing",
+    )
+    # Muted → operator email returns False
+    assert ok is False
+    # But webhook event MUST always be written
+    webhook_rows = [i["row"] for i in sb._inserts if i["table"] == "webhook_events"]
+    assert webhook_rows, "lead.clicked webhook event must be emitted regardless of notifier state"
+    assert webhook_rows[0]["event_type"] == "lead.clicked"
+    assert webhook_rows[0]["payload"]["lead_id"] == "lead-1"
+    assert webhook_rows[0]["payload"]["clicked_url"] == "https://example.nl/landing"
+
+
+def test_notify_lead_clicked_throttle_key_is_per_lead(monkeypatch):
+    """Two different leads must not throttle each other."""
+    import utils.notifier as nt
+    monkeypatch.setenv("WARMR_NOTIFY_MUTE", "1")
+    import importlib
+    importlib.reload(nt)
+
+    # recent=False → neither lead has a prior notification in the window
+    sb = _NotifyFakeSb(recent=False)
+    nt.notify_lead_clicked(sb, "client-a", "lead-1", "a@x.nl", "c1", "https://example.nl/a")
+    nt.notify_lead_clicked(sb, "client-a", "lead-2", "b@x.nl", "c1", "https://example.nl/b")
+
+    # Two webhook events and two distinct notification "kinds"
+    webhook_count = sum(1 for i in sb._inserts if i["table"] == "webhook_events")
+    assert webhook_count == 2
+
+
+def test_lead_clicked_is_a_valid_webhook_event():
+    """public_api.VALID_EVENTS must include lead.clicked so subscribers
+    can register for it."""
+    from api.public_api import VALID_EVENTS
+    assert "lead.clicked" in VALID_EVENTS
+
+
 # ── GDPR endpoint registration ───────────────────────────────────────────
 
 def test_gdpr_erase_endpoint_is_registered():
