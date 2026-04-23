@@ -2491,9 +2491,30 @@ async def import_leads(
     )
     existing_emails: set[str] = {r["email"].lower() for r in (existing_resp.data or [])}
 
+    # Fetch suppression list — GDPR: previously-unsubscribed emails must NEVER
+    # be re-imported and contacted. Also blocks domains on the list.
+    try:
+        supp_resp = (
+            _supabase.table("suppression_list")
+            .select("email, domain")
+            .eq("client_id", client_id)
+            .execute()
+        )
+        suppressed_emails: set[str] = {
+            (r.get("email") or "").lower() for r in (supp_resp.data or []) if r.get("email")
+        }
+        suppressed_domains: set[str] = {
+            (r.get("domain") or "").lower() for r in (supp_resp.data or []) if r.get("domain")
+        }
+    except Exception as exc:
+        logger.warning("Suppression fetch failed during import (continuing): %s", exc)
+        suppressed_emails = set()
+        suppressed_domains = set()
+
     imported = 0
     duplicates = 0
     errors = 0
+    suppressed = 0
     error_details: list[str] = []
     batch: list[dict] = []
 
@@ -2521,6 +2542,12 @@ async def import_leads(
             continue
 
         domain = raw_email.split("@")[-1]
+
+        # Suppression check — do NOT import an email or domain that's been
+        # suppressed. Prevents re-contacting prospects who unsubscribed.
+        if raw_email in suppressed_emails or domain in suppressed_domains:
+            suppressed += 1
+            continue
 
         lead_row: dict = {
             "email": raw_email,
@@ -2554,6 +2581,7 @@ async def import_leads(
         imported=imported,
         duplicates=duplicates,
         errors=errors,
+        suppressed=suppressed,
         error_details=error_details[:50],  # Cap to avoid enormous response bodies
     )
 
@@ -4281,6 +4309,161 @@ async def clone_campaign(campaign_id: str, client_id: ClientId, body: dict = {})
             pass
 
     return {"id": new_id, "name": new_name, "cloned_steps": cloned_steps}
+
+
+@app.post("/campaigns/{campaign_id}/test-send", tags=["Campaigns"])
+@limiter.limit("10/hour")
+async def test_send_campaign(
+    request: Request,
+    campaign_id: str,
+    client_id: ClientId,
+    body: dict = {},
+) -> dict:
+    """
+    Send ONE preview email from the specified campaign step to a test address.
+
+    Body: {"to": "yourself@yourdomain.nl", "step_number": 1, "inbox_id": "optional"}
+    Defaults: to = the operator's clients.email, step_number = 1.
+
+    - Renders spintax + variables with a synthetic lead using the operator's
+      own name/email so the preview reads realistically.
+    - Does NOT write to email_events, email_tracking, sending_schedule, or
+      campaign_leads. Nothing counts against daily_sent.
+    - Rate-limited 10/hour per key to keep it a testing tool, not a sending path.
+
+    Use this to verify subject lines, personalisation, tracking pixel
+    injection, and deliverability before activating a campaign.
+    """
+    # Ownership check
+    camp_resp = _supabase.table("campaigns").select("*").eq("id", campaign_id).limit(1).execute()
+    if not camp_resp.data:
+        raise HTTPException(status_code=404, detail="Campaign not found.")
+    campaign = camp_resp.data[0]
+    if campaign.get("client_id") != client_id:
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    step_number = int(body.get("step_number") or 1)
+    steps_resp = (
+        _supabase.table("sequence_steps")
+        .select("*")
+        .eq("campaign_id", campaign_id)
+        .eq("step_number", step_number)
+        .limit(1)
+        .execute()
+    )
+    if not steps_resp.data:
+        raise HTTPException(status_code=422, detail=f"Campaign has no step_number={step_number}.")
+    step = steps_resp.data[0]
+
+    # Resolve recipient: body.to → clients.email → 400
+    to_email = (body.get("to") or "").strip().lower()
+    if not to_email:
+        client_resp = _supabase.table("clients").select("email").eq("id", client_id).limit(1).execute()
+        to_email = ((client_resp.data or [{}])[0].get("email") or "").strip().lower()
+    if not to_email or "@" not in to_email:
+        raise HTTPException(status_code=422, detail="No recipient address — pass 'to' in the body.")
+
+    # Pick a sending inbox — explicit inbox_id, or the first non-retired one for this client
+    inbox_id = body.get("inbox_id")
+    if inbox_id:
+        ib_resp = _supabase.table("inboxes").select("*").eq("id", inbox_id).eq("client_id", client_id).limit(1).execute()
+    else:
+        ib_resp = (
+            _supabase.table("inboxes")
+            .select("*")
+            .eq("client_id", client_id)
+            .neq("status", "retired")
+            .limit(1)
+            .execute()
+        )
+    if not ib_resp.data:
+        raise HTTPException(status_code=422, detail="No sending inbox available for this client.")
+    inbox = ib_resp.data[0]
+    inbox_email = inbox["email"]
+
+    # Load SMTP password from env — never from DB
+    sender_password = ""
+    i = 1
+    while True:
+        env_email = os.getenv(f"INBOX_{i}_EMAIL")
+        if not env_email:
+            break
+        if env_email.strip().lower() == inbox_email.lower():
+            sender_password = (os.getenv(f"INBOX_{i}_PASSWORD") or "").strip()
+            break
+        i += 1
+    if not sender_password:
+        raise HTTPException(
+            status_code=500,
+            detail=f"No SMTP credentials configured in .env for {inbox_email}.",
+        )
+
+    # Build a synthetic lead using the operator's info so the preview reads
+    # realistically. Variables with no data fall back to the natural defaults.
+    settings_resp = _supabase.table("client_settings").select("*").eq("client_id", client_id).limit(1).execute()
+    settings = (settings_resp.data or [{}])[0]
+
+    synthetic_lead = {
+        "id":         "test-preview",
+        "email":      to_email,
+        "first_name": (settings.get("sender_name") or "").split(" ")[0] or "there",
+        "last_name":  "",
+        "company":    settings.get("company_name") or "",
+        "domain":     to_email.split("@")[-1],
+        "custom_fields": body.get("custom_fields") or {},
+    }
+
+    from spintax_engine import process_content
+    raw_subject = step.get("subject") or ""
+    raw_body = step.get("body") or ""
+    rendered_subject = process_content(raw_subject, synthetic_lead, step_number=step_number, client_settings=settings)
+    rendered_body = process_content(raw_body, synthetic_lead, step_number=step_number, client_settings=settings)
+
+    # Prefix subject so the operator sees clearly that it's a test, not live send
+    rendered_subject = f"[TEST] {rendered_subject}"
+
+    # Send — no tracking, no events, no counters
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.utils import formatdate, make_msgid
+
+    msg = MIMEMultipart("alternative")
+    msg["From"] = inbox_email
+    msg["To"] = to_email
+    msg["Subject"] = rendered_subject
+    msg["Date"] = formatdate(localtime=False)
+    msg["Message-ID"] = make_msgid(domain=inbox_email.split("@")[-1])
+    msg.attach(MIMEText(rendered_body, "plain", "utf-8"))
+
+    from warmup_engine import get_smtp_server, SMTP_PORT
+    smtp_host = get_smtp_server(inbox.get("provider") or "google")
+
+    try:
+        from utils.smtp_retry import send_with_retry
+        send_with_retry(
+            smtp_host=smtp_host,
+            smtp_port=SMTP_PORT,
+            sender_email=inbox_email,
+            sender_password=sender_password,
+            recipient_email=to_email,
+            msg_as_string=msg.as_string(),
+            max_attempts=2,  # test-sends should fail fast, not grind through retries
+        )
+    except smtplib.SMTPAuthenticationError:
+        raise HTTPException(status_code=502, detail="SMTP authentication failed.")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Test send failed: {exc}")
+
+    return {
+        "sent_to":          to_email,
+        "from_inbox":       inbox_email,
+        "campaign":         campaign.get("name"),
+        "step_number":      step_number,
+        "rendered_subject": rendered_subject,
+        "rendered_body":    rendered_body,
+        "note":             "Test sends are not logged to email_events and do not count against daily_sent.",
+    }
 
 
 # ---------------------------------------------------------------------------

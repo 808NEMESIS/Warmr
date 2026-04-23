@@ -44,7 +44,8 @@ SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 WARMUP_LANGUAGE: str = os.getenv("WARMUP_LANGUAGE", "nl")
-MAX_DAILY_WARMUP: int = int(os.getenv("MAX_DAILY_WARMUP", "80"))
+MAX_DAILY_WARMUP: int  = int(os.getenv("MAX_DAILY_WARMUP", "80"))
+MAX_HOURLY_WARMUP: int = int(os.getenv("MAX_HOURLY_WARMUP", "15"))
 SEND_WINDOW_START: str = os.getenv("SEND_WINDOW_START", "07:00")
 SEND_WINDOW_END: str = os.getenv("SEND_WINDOW_END", "19:00")
 
@@ -501,6 +502,31 @@ def process_inbox(
     if daily_sent >= daily_target:
         logger.info("Inbox %s already at daily target (%d/%d) — skipping.", inbox_email, daily_sent, daily_target)
         return
+
+    # ── Step 3b: per-hour burst cap ────────────────────────────────────────
+    # Gmail throws 421 "temporary failure" if we send too many in a short
+    # window. Enforce MAX_HOURLY_WARMUP regardless of daily headroom.
+    try:
+        from datetime import datetime, timedelta, timezone
+        hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        hour_resp = (
+            supabase.table("warmup_logs")
+            .select("id", count="exact")
+            .eq("inbox_id", inbox_id)
+            .eq("action", "sent")
+            .gte("timestamp", hour_ago)
+            .execute()
+        )
+        sent_last_hour = hour_resp.count or 0
+        if sent_last_hour >= MAX_HOURLY_WARMUP:
+            logger.info(
+                "Inbox %s at hourly cap (%d/%d in last 60 min) — skipping this run.",
+                inbox_email, sent_last_hour, MAX_HOURLY_WARMUP,
+            )
+            return
+    except Exception as exc:
+        # If the cap check itself fails, proceed — daily cap still protects us
+        logger.debug("Hourly cap check failed for %s (continuing): %s", inbox_email, exc)
 
     # ── Step 4: find recipients used today ────────────────────────────────
     used_today = get_used_recipients_today(supabase, inbox_id)

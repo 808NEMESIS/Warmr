@@ -67,9 +67,17 @@ def test_substitute_unknown_var_left_unchanged():
     assert substitute_variables("{{nonexistent}}", lead) == "{{nonexistent}}"
 
 
-def test_substitute_missing_var_left_unchanged():
-    lead = {}  # no first_name
-    assert substitute_variables("Hi {{first_name}}", lead) == "Hi {{first_name}}"
+def test_substitute_missing_builtin_falls_back_naturally():
+    """Missing first_name renders as 'there' — 'Hi there,' reads natural.
+    Before this, it was 'Hi {{first_name}},' which shipped to the prospect
+    and looked broken. The fallback protects deliverability + UX."""
+    lead = {}
+    assert substitute_variables("Hi {{first_name}},", lead) == "Hi there,"
+
+
+def test_substitute_missing_company_falls_back_to_your_team():
+    lead = {}
+    assert substitute_variables("how's {{company}} doing?", lead) == "how's your team doing?"
 
 
 def test_substitute_custom_field():
@@ -77,9 +85,10 @@ def test_substitute_custom_field():
     assert substitute_variables("Revenue: {{custom:revenue}}", lead) == "Revenue: 5M"
 
 
-def test_substitute_custom_field_missing():
+def test_substitute_custom_field_missing_becomes_empty():
+    """Custom fields are optional personalization — empty is the right default."""
     lead = {"custom_fields": {}}
-    assert substitute_variables("{{custom:missing}}", lead) == "{{custom:missing}}"
+    assert substitute_variables("{{custom:missing}}", lead) == ""
 
 
 def test_substitute_client_settings_calendar_link():

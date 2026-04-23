@@ -456,6 +456,7 @@ async def _insert_leads_bulk(
     imported   = 0
     duplicates = 0
     errors     = 0
+    suppressed = 0
     error_details: list[str] = []
     inserted_ids: list[str] = []
 
@@ -470,11 +471,34 @@ async def _insert_leads_bulk(
         )
         existing_emails = {r["email"].lower() for r in (existing_resp.data or [])}
 
+    # Suppression list: blocks previously-unsubscribed emails and domains
+    # from being re-created. GDPR-required + avoids operator embarrassment.
+    suppressed_emails: set[str] = set()
+    suppressed_domains: set[str] = set()
+    try:
+        supp_resp = (
+            sb.table("suppression_list")
+            .select("email, domain")
+            .eq("client_id", ctx.client_id)
+            .execute()
+        )
+        for r in (supp_resp.data or []):
+            if r.get("email"):
+                suppressed_emails.add(r["email"].lower())
+            if r.get("domain"):
+                suppressed_domains.add(r["domain"].lower())
+    except Exception as exc:
+        logger.warning("Suppression fetch during bulk import failed (continuing): %s", exc)
+
     rows_to_insert = []
     for lead in body.leads:
         email_lower = lead.email.lower()
         if body.deduplicate and email_lower in existing_emails:
             duplicates += 1
+            continue
+        domain_lower = email_lower.split("@")[-1] if "@" in email_lower else ""
+        if email_lower in suppressed_emails or (domain_lower and domain_lower in suppressed_domains):
+            suppressed += 1
             continue
         existing_emails.add(email_lower)
         rows_to_insert.append({
@@ -531,6 +555,7 @@ async def _insert_leads_bulk(
     return {
         "pushed":        imported,
         "duplicates":    duplicates,
+        "suppressed":    suppressed,
         "failed":        errors,
         "error_details": error_details[:20],  # cap to avoid huge responses
     }

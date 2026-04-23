@@ -14,9 +14,12 @@ creating natural message variety without A/B testing overhead.
 """
 
 import hashlib
+import logging
 import random
 import re
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -187,12 +190,36 @@ _BUILTIN_VARS: dict[str, str] = {
 _VAR_PATTERN = re.compile(r"\{\{([^}]+)\}\}")
 
 
+# Natural-language fallbacks for known built-ins when the lead field is empty.
+# Chosen to read plausibly in a greeting / sentence context: "Hi there," and
+# "how's your team doing" sound fine; blank strings for optional fields.
+# Custom fields and unknown variables are handled separately.
+_BUILTIN_FALLBACKS: dict[str, str] = {
+    "first_name":   "there",
+    "last_name":    "",
+    "full_name":    "there",
+    "company":      "your team",
+    "company_name": "your team",
+    "email":        "",
+    "job_title":    "",
+    "phone":        "",
+    "country":      "",
+    "linkedin_url": "",
+    "domain":       "",
+}
+
+
 def _resolve_var(name: str, lead: dict, client_settings: dict | None = None) -> str:
     """
     Resolve one {{variable}} token against a lead dict and optional client_settings.
 
-    Unknown variables are left as-is so the output clearly flags missing data
-    rather than silently inserting empty strings.
+    Missing KNOWN built-ins fall back to natural values (see _BUILTIN_FALLBACKS)
+    so output reads like "Hi there," not "Hi {{first_name}},". Genuinely
+    unknown variables (e.g. a typo'd {{firtsname}}) still render as
+    "{{firtsname}}" so template bugs stay visible.
+
+    Custom fields ({{custom:X}}) fall back to empty string when missing —
+    they're usually optional personalization add-ons.
     """
     name = name.strip()
     settings = client_settings or {}
@@ -201,7 +228,7 @@ def _resolve_var(name: str, lead: dict, client_settings: dict | None = None) -> 
     if name.startswith("custom:"):
         key = name[7:].strip()
         custom = lead.get("custom_fields") or {}
-        return str(custom.get(key, f"{{{{{name}}}}}"))
+        return str(custom.get(key, ""))
 
     # Computed: full_name = first_name + last_name
     if name == "full_name":
@@ -210,15 +237,18 @@ def _resolve_var(name: str, lead: dict, client_settings: dict | None = None) -> 
             (lead.get("last_name") or "").strip(),
         ]
         combined = " ".join(p for p in parts if p)
-        return combined or f"{{{{{name}}}}}"
+        if combined:
+            return combined
+        logger.debug("Variable fallback: full_name empty for lead %s", lead.get("id"))
+        return _BUILTIN_FALLBACKS["full_name"]
 
     # Client-level variables (calendar/booking link, sender details)
     if name in ("calendar_link", "booking_url"):
-        return settings.get("booking_url") or f"{{{{{name}}}}}"
+        return settings.get("booking_url") or ""
     if name == "sender_name":
-        return settings.get("sender_name") or f"{{{{{name}}}}}"
+        return settings.get("sender_name") or ""
     if name == "sender_company":
-        return settings.get("company_name") or f"{{{{{name}}}}}"
+        return settings.get("company_name") or ""
     if name == "signature":
         return settings.get("email_signature") or ""
 
@@ -226,9 +256,12 @@ def _resolve_var(name: str, lead: dict, client_settings: dict | None = None) -> 
     lead_key = _BUILTIN_VARS.get(name)
     if lead_key:
         value = lead.get(lead_key) or ""
-        return str(value) if value else f"{{{{{name}}}}}"
+        if value:
+            return str(value)
+        logger.debug("Variable fallback: %s empty for lead %s", name, lead.get("id"))
+        return _BUILTIN_FALLBACKS.get(name, "")
 
-    # Unknown — return unchanged so the template error is visible
+    # Genuinely unknown name (likely a typo) — keep visible so authors notice
     return f"{{{{{name}}}}}"
 
 

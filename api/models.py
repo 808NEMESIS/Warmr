@@ -196,6 +196,10 @@ class LeadImportResult(BaseModel):
     imported: int
     duplicates: int
     errors: int
+    # GDPR: leads skipped because their email or domain is on the suppression
+    # list for this client. Counted separately from duplicates so operators
+    # can tell "already in leads" from "previously unsubscribed".
+    suppressed: int = 0
     error_details: list[str]
 
 

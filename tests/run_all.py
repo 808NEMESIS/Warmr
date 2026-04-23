@@ -59,6 +59,7 @@ TEST_MODULES = [
     "test_public_api_protections",
     "test_reply_features",
     "test_new_safety_features",
+    "test_preflight_features",
 ]
 
 

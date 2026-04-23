@@ -356,6 +356,42 @@ def count_campaign_sends_today(supabase: Client, campaign_id: str) -> int:
     return resp.count or 0
 
 
+def count_inbox_sends_last_hour(supabase: Client, inbox_id: str) -> int:
+    """
+    Count `sent` events for an inbox in the last 60 minutes across BOTH
+    warmup and campaign paths. Warmup emails are logged to warmup_logs;
+    campaign emails to email_events. Sum both for a true burst view.
+    """
+    from datetime import timedelta
+    hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    total = 0
+    try:
+        a = (
+            supabase.table("warmup_logs")
+            .select("id", count="exact")
+            .eq("inbox_id", inbox_id)
+            .eq("action", "sent")
+            .gte("timestamp", hour_ago)
+            .execute()
+        )
+        total += a.count or 0
+    except Exception:
+        pass
+    try:
+        b = (
+            supabase.table("email_events")
+            .select("id", count="exact")
+            .eq("inbox_id", inbox_id)
+            .eq("event_type", "sent")
+            .gte("timestamp", hour_ago)
+            .execute()
+        )
+        total += b.count or 0
+    except Exception:
+        pass
+    return total
+
+
 def log_email_event(
     supabase: Client,
     campaign_id: str,
@@ -825,6 +861,19 @@ def process_lead(
     password = inbox_credentials.get(inbox_email.lower())
     if not password:
         logger.error("No SMTP password found in env for inbox %s — skipping.", inbox_email)
+        return False
+
+    # ── Per-inbox hourly burst cap ────────────────────────────────────────
+    # Gmail/Microsoft throw 421 when we burst. MAX_HOURLY_CAMPAIGN counts
+    # sends from BOTH warmup and campaign paths — the mailbox doesn't care
+    # which bucket they came from, only the total in the last 60 min.
+    _hourly_cap = int(os.getenv("MAX_HOURLY_CAMPAIGN", "20"))
+    sent_last_hour = count_inbox_sends_last_hour(supabase, inbox_id)
+    if sent_last_hour >= _hourly_cap:
+        logger.info(
+            "Inbox %s at hourly cap (%d/%d) — deferring lead %s to next run.",
+            inbox_email, sent_last_hour, _hourly_cap, lead.get("email"),
+        )
         return False
 
     # ── Generate tracking token ──────────────────────────────────────────
