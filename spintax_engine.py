@@ -15,11 +15,16 @@ creating natural message variety without A/B testing overhead.
 
 import hashlib
 import logging
+import os
 import random
 import re
-from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+# Module-level default language — falls back to English if WARMUP_LANGUAGE
+# isn't set. Used by _pick_fallback_table when neither the campaign nor the
+# client_settings supplies a language hint.
+_DEFAULT_LANG: str = os.getenv("WARMUP_LANGUAGE", "en").lower()
 
 
 # ---------------------------------------------------------------------------
@@ -190,23 +195,77 @@ _BUILTIN_VARS: dict[str, str] = {
 _VAR_PATTERN = re.compile(r"\{\{([^}]+)\}\}")
 
 
-# Natural-language fallbacks for known built-ins when the lead field is empty.
-# Chosen to read plausibly in a greeting / sentence context: "Hi there," and
-# "how's your team doing" sound fine; blank strings for optional fields.
-# Custom fields and unknown variables are handled separately.
-_BUILTIN_FALLBACKS: dict[str, str] = {
-    "first_name":   "there",
-    "last_name":    "",
-    "full_name":    "there",
-    "company":      "your team",
-    "company_name": "your team",
-    "email":        "",
-    "job_title":    "",
-    "phone":        "",
-    "country":      "",
-    "linkedin_url": "",
-    "domain":       "",
+# Natural-language fallbacks per language. The campaign or client_settings
+# language wins; otherwise we default to the keys under "en". Mixing English
+# fallbacks ("Hi there,") into a Dutch campaign reads off, so we localise.
+#
+# Chosen to read plausibly in a greeting / sentence context. Blank strings
+# for fields that are awkward to fake (job title, phone). Custom fields and
+# unknown variables are handled separately by _resolve_var.
+_FALLBACKS_BY_LANG: dict[str, dict[str, str]] = {
+    "en": {
+        "first_name":   "there",
+        "last_name":    "",
+        "full_name":    "there",
+        "company":      "your team",
+        "company_name": "your team",
+        "email":        "",
+        "job_title":    "",
+        "phone":        "",
+        "country":      "",
+        "linkedin_url": "",
+        "domain":       "",
+    },
+    "nl": {
+        "first_name":   "daar",
+        "last_name":    "",
+        "full_name":    "daar",
+        "company":      "jullie team",
+        "company_name": "jullie team",
+        "email":        "",
+        "job_title":    "",
+        "phone":        "",
+        "country":      "",
+        "linkedin_url": "",
+        "domain":       "",
+    },
+    "fr": {
+        "first_name":   "vous",
+        "last_name":    "",
+        "full_name":    "vous",
+        "company":      "votre équipe",
+        "company_name": "votre équipe",
+        "email":        "",
+        "job_title":    "",
+        "phone":        "",
+        "country":      "",
+        "linkedin_url": "",
+        "domain":       "",
+    },
 }
+
+# Backwards-compat alias for any caller that imports the old name directly.
+_BUILTIN_FALLBACKS = _FALLBACKS_BY_LANG["en"]
+
+
+def _pick_fallback_table(client_settings: dict | None) -> dict[str, str]:
+    """Resolve which language's fallback dict to use.
+
+    Order of precedence:
+      1. client_settings["language"]    (campaign-level override at render time)
+      2. client_settings["default_language"]
+      3. WARMUP_LANGUAGE env (matches the default for new campaigns)
+      4. English
+    Unknown languages fall back to English.
+    """
+    settings = client_settings or {}
+    lang = (
+        settings.get("language")
+        or settings.get("default_language")
+        or _DEFAULT_LANG
+        or "en"
+    )
+    return _FALLBACKS_BY_LANG.get(str(lang).lower(), _FALLBACKS_BY_LANG["en"])
 
 
 def _resolve_var(name: str, lead: dict, client_settings: dict | None = None) -> str:
@@ -230,6 +289,8 @@ def _resolve_var(name: str, lead: dict, client_settings: dict | None = None) -> 
         custom = lead.get("custom_fields") or {}
         return str(custom.get(key, ""))
 
+    fallbacks = _pick_fallback_table(settings)
+
     # Computed: full_name = first_name + last_name
     if name == "full_name":
         parts = [
@@ -240,7 +301,7 @@ def _resolve_var(name: str, lead: dict, client_settings: dict | None = None) -> 
         if combined:
             return combined
         logger.debug("Variable fallback: full_name empty for lead %s", lead.get("id"))
-        return _BUILTIN_FALLBACKS["full_name"]
+        return fallbacks["full_name"]
 
     # Client-level variables (calendar/booking link, sender details)
     if name in ("calendar_link", "booking_url"):
@@ -259,7 +320,7 @@ def _resolve_var(name: str, lead: dict, client_settings: dict | None = None) -> 
         if value:
             return str(value)
         logger.debug("Variable fallback: %s empty for lead %s", name, lead.get("id"))
-        return _BUILTIN_FALLBACKS.get(name, "")
+        return fallbacks.get(name, "")
 
     # Genuinely unknown name (likely a typo) — keep visible so authors notice
     return f"{{{{{name}}}}}"

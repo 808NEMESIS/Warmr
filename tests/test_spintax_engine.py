@@ -67,17 +67,29 @@ def test_substitute_unknown_var_left_unchanged():
     assert substitute_variables("{{nonexistent}}", lead) == "{{nonexistent}}"
 
 
-def test_substitute_missing_builtin_falls_back_naturally():
-    """Missing first_name renders as 'there' — 'Hi there,' reads natural.
-    Before this, it was 'Hi {{first_name}},' which shipped to the prospect
-    and looked broken. The fallback protects deliverability + UX."""
+def test_substitute_missing_builtin_falls_back_in_english():
+    """Missing first_name renders as 'there' under EN — 'Hi there,' reads natural."""
     lead = {}
-    assert substitute_variables("Hi {{first_name}},", lead) == "Hi there,"
+    assert substitute_variables("Hi {{first_name}},", lead, {"language": "en"}) == "Hi there,"
 
 
-def test_substitute_missing_company_falls_back_to_your_team():
+def test_substitute_missing_first_name_dutch_uses_daar():
+    """A Dutch campaign should not ship 'Hi there,' — that's mixed-language."""
     lead = {}
-    assert substitute_variables("how's {{company}} doing?", lead) == "how's your team doing?"
+    assert substitute_variables("Hi {{first_name}},", lead, {"language": "nl"}) == "Hi daar,"
+
+
+def test_substitute_missing_company_uses_locale():
+    lead = {}
+    assert substitute_variables("how's {{company}} doing?", lead, {"language": "en"}) == "how's your team doing?"
+    assert substitute_variables("hoe gaat {{company}}?", lead, {"language": "nl"}) == "hoe gaat jullie team?"
+    assert substitute_variables("comment va {{company}}?", lead, {"language": "fr"}) == "comment va votre équipe?"
+
+
+def test_substitute_unknown_language_falls_back_to_english():
+    """Unsupported locale (e.g. 'de') silently uses English defaults."""
+    lead = {}
+    assert substitute_variables("Hi {{first_name}},", lead, {"language": "de"}) == "Hi there,"
 
 
 def test_substitute_custom_field():

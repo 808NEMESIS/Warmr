@@ -23,23 +23,37 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 def test_missing_first_name_falls_back_to_there():
     from spintax_engine import substitute_variables
-    assert substitute_variables("Hi {{first_name}},", {}) == "Hi there,"
+    assert substitute_variables("Hi {{first_name}},", {}, {"language": "en"}) == "Hi there,"
 
 
 def test_missing_company_falls_back_to_your_team():
     from spintax_engine import substitute_variables
-    assert substitute_variables("hoe gaat {{company}}?", {}) == "hoe gaat your team?"
+    out = substitute_variables("how's {{company}}?", {}, {"language": "en"})
+    assert out == "how's your team?"
 
 
 def test_populated_first_name_wins_over_fallback():
     from spintax_engine import substitute_variables
-    assert substitute_variables("Hi {{first_name}},", {"first_name": "Sami"}) == "Hi Sami,"
+    assert substitute_variables("Hi {{first_name}},", {"first_name": "Sami"}, {"language": "en"}) == "Hi Sami,"
 
 
 def test_full_name_fallback():
     from spintax_engine import substitute_variables
-    assert substitute_variables("Beste {{full_name}}", {}) == "Beste there"
-    assert substitute_variables("Beste {{full_name}}", {"first_name": "Sami"}) == "Beste Sami"
+    assert substitute_variables("Beste {{full_name}}", {}, {"language": "nl"}) == "Beste daar"
+    assert substitute_variables("Beste {{full_name}}", {"first_name": "Sami"}, {"language": "nl"}) == "Beste Sami"
+
+
+def test_dutch_fallback_avoids_english_mixing():
+    """Regression guard: a Dutch campaign should not ship 'there' or 'your team'."""
+    from spintax_engine import substitute_variables
+    out = substitute_variables(
+        "Hi {{first_name}}, hoe gaat {{company}}?",
+        {},
+        {"language": "nl"},
+    )
+    assert "there" not in out
+    assert "your team" not in out
+    assert out == "Hi daar, hoe gaat jullie team?"
 
 
 def test_typo_variable_stays_visible():

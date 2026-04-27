@@ -698,7 +698,12 @@ async def unread_count(client_id: ClientId) -> dict:
 
 @app.post("/replies/{reply_id}/analyze-intent", tags=["Replies"])
 @limiter.limit("20/hour")
-async def analyze_reply_intent(request: Request, reply_id: str, client_id: ClientId) -> dict:
+async def analyze_reply_intent(
+    request: Request,
+    reply_id: str,
+    client_id: ClientId,
+    depth: str = Query("fast", regex="^(fast|deep)$"),
+) -> dict:
     """
     Consumer-psychology analysis of a single incoming reply.
 
@@ -712,7 +717,11 @@ async def analyze_reply_intent(request: Request, reply_id: str, client_id: Clien
 
     Result is cached on reply_inbox.intent_analysis. Rerun overwrites.
 
-    Rate-limited to 20/hour to keep Claude spend predictable (Opus call).
+    Cost control:
+      depth=fast (default) → Sonnet 4.6, ~€0.005 per call
+      depth=deep           → Opus 4.7,    ~€0.05  per call (10x cost)
+    Use deep when fast confidence < 0.5 or for ambiguous replies that
+    need a sharper read. Rate-limit 20/hour applies to both.
     """
     # Ownership check
     row_resp = (
@@ -763,11 +772,17 @@ Guidance:
 - cialdini_principle is the principle MOST useful to deploy in the response, not what the reply expresses.
 - confidence reflects how clear the signals are; ≤0.5 on very short/ambiguous replies."""
 
+    # Model selection — Sonnet handles this classification task with quality
+    # indistinguishable from Opus in our tests, at ~10x lower cost.
+    # depth="deep" still routes to Opus when the operator wants a sharper read
+    # on a confusing reply.
+    model_id = "claude-opus-4-7" if depth == "deep" else "claude-sonnet-4-6"
+
     try:
         import anthropic as _anthropic, json as _json
         client = _anthropic.Anthropic(api_key=api_key)
         message = client.messages.create(
-            model="claude-opus-4-7",
+            model=model_id,
             max_tokens=900,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -775,8 +790,11 @@ Guidance:
         if raw.startswith("```"):
             raw = "\n".join(raw.split("\n")[1:-1])
         analysis = _json.loads(raw)
+        # Stamp the model so cached results are interpretable later
+        analysis["_model"] = model_id
+        analysis["_depth"] = depth
     except Exception as exc:
-        logger.exception("Intent analysis failed for reply %s", reply_id)
+        logger.exception("Intent analysis failed (model=%s) for reply %s", model_id, reply_id)
         raise HTTPException(status_code=500, detail=f"Intent analysis failed: {exc}")
 
     try:
@@ -928,10 +946,19 @@ async def send_reply(
     from warmup_engine import get_smtp_server, SMTP_PORT
     smtp_host = get_smtp_server(inbox.get("provider") or "google")
 
+    # Route through send_with_retry so 4xx transients (rate limit, greylisting)
+    # auto-retry with backoff. 5xx still fails immediately to avoid reputation
+    # harm from retrying bad addresses.
     try:
-        with smtplib.SMTP_SSL(smtp_host, SMTP_PORT) as server:
-            server.login(sender_email, sender_password)
-            server.sendmail(sender_email, [prospect_email], msg.as_string())
+        from utils.smtp_retry import send_with_retry
+        send_with_retry(
+            smtp_host=smtp_host,
+            smtp_port=SMTP_PORT,
+            sender_email=sender_email,
+            sender_password=sender_password,
+            recipient_email=prospect_email,
+            msg_as_string=msg.as_string(),
+        )
     except smtplib.SMTPAuthenticationError as exc:
         logger.error("SMTP auth failed for %s: %s", sender_email, exc)
         raise HTTPException(status_code=502, detail="SMTP authentication failed.")
