@@ -596,6 +596,14 @@ var _SHORTCUTS = [
   }},
   { key: 't',   desc: 'Thema wisselen',     action: function() { toggleTheme(); return true; }},
   { key: '?',   desc: 'Help (shortcuts)',   action: function() { showShortcutHelp(); return true; }},
+  // Inbox-page shortcuts (only fire on unified-inbox.html — page registers its own
+  // handler. Listed here so the help modal documents them.)
+  { key: 'j',   desc: 'Inbox: volgende reply',     action: function() { return false; }},
+  { key: 'k',   desc: 'Inbox: vorige reply',      action: function() { return false; }},
+  { key: 'e',   desc: 'Inbox: gelezen / ongelezen',action: function() { return false; }},
+  { key: 'r',   desc: 'Inbox: open reply composer',action: function() { return false; }},
+  { key: 'i',   desc: 'Inbox: AI intent-analyse',  action: function() { return false; }},
+  { key: '⌘↵',  desc: 'Inbox: verstuur reply (in composer)', action: function() { return false; }},
 ];
 
 var _keyBuffer = '';

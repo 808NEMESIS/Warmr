@@ -729,6 +729,112 @@ async function aiSuggestReplies(replyId) {
     if (window.showToast) window.showToast('AI-suggesties mislukt', 'error');
   }
 }
+
+// ── Page-local keyboard shortcuts ────────────────────────────────────────────
+// j / k        — next / previous reply
+// e            — toggle read on current reply
+// r            — open reply composer
+// i            — analyse intent
+// Cmd/Ctrl+↵   — send reply (when composer is open and focused)
+// ?            — show shortcut help (handled globally by app.js)
+//
+// We register a separate keydown handler from the global one so we can act
+// inside text inputs only for ⌘/Ctrl+Enter (the send shortcut). Single-key
+// shortcuts skip when the user is typing in any input.
+
+(function registerInboxShortcuts() {
+  function _isTyping(target) {
+    if (!target) return false;
+    var tag = (target.tagName || '').toLowerCase();
+    return tag === 'input' || tag === 'textarea' || target.isContentEditable;
+  }
+
+  function _currentIndex() {
+    if (!_current || !_replies.length) return -1;
+    for (var i = 0; i < _replies.length; i++) {
+      if (_replies[i].id === _current.id) return i;
+    }
+    return -1;
+  }
+
+  function _selectAt(idx) {
+    if (idx < 0 || idx >= _replies.length) return;
+    var target = _replies[idx];
+    openReply(target.id);
+    // Bring the list-item into view if needed
+    setTimeout(function() {
+      var node = document.querySelector('.reply-item.active');
+      if (node && node.scrollIntoView) {
+        node.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }
+    }, 60);
+  }
+
+  function _toggleReadOnCurrent() {
+    if (!_current) return;
+    if (_current.is_read) {
+      // Local mark unread via existing endpoint; the function reloads list state.
+      if (typeof markUnread === 'function') markUnread(_current.id);
+    } else {
+      // Mark as read — reuse the patch endpoint inline so we don't add new code paths.
+      api('/replies/' + _current.id, {
+        method: 'PATCH',
+        body: JSON.stringify({ is_read: true }),
+      }).then(function() {
+        _current.is_read = true;
+        loadReplies();
+        if (window.showToast) window.showToast('Gemarkeerd als gelezen', 'success');
+      }).catch(function(err) {
+        if (window.showToast) window.showToast('Kon niet markeren: ' + err.message, 'error');
+      });
+    }
+  }
+
+  document.addEventListener('keydown', function(e) {
+    var typing = _isTyping(e.target);
+
+    // ⌘/Ctrl + Enter inside the reply composer → send
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      var ta = e.target;
+      if (ta && ta.id && ta.id.indexOf('reply-body-') === 0) {
+        var replyId = ta.id.replace('reply-body-', '');
+        e.preventDefault();
+        if (typeof sendReply === 'function') sendReply(replyId);
+      }
+      return;
+    }
+
+    // Single-key shortcuts skip when typing or when modifier is pressed.
+    if (typing) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+    var k = e.key;
+    if (k === 'j' || k === 'k') {
+      var idx = _currentIndex();
+      if (idx === -1 && _replies.length) {
+        _selectAt(0);
+      } else {
+        _selectAt(k === 'j' ? Math.min(_replies.length - 1, idx + 1)
+                            : Math.max(0, idx - 1));
+      }
+      e.preventDefault();
+      return;
+    }
+
+    if (!_current) return;  // shortcuts below require a selected reply
+
+    if (k === 'e') {
+      _toggleReadOnCurrent();
+      e.preventDefault();
+    } else if (k === 'r') {
+      if (typeof openReplyComposer === 'function') openReplyComposer(_current.id);
+      e.preventDefault();
+    } else if (k === 'i') {
+      if (typeof analyzeIntent === 'function') analyzeIntent(_current.id);
+      e.preventDefault();
+    }
+  });
+})();
 </script>
 </body>
 </html>
