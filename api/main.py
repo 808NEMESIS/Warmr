@@ -211,8 +211,44 @@ app.include_router(apikey_router)
 
 @app.get("/health", tags=["System"])
 async def health_check() -> dict:
-    """Public health probe — no auth required."""
-    return {"status": "ok", "version": "1.0.0"}
+    """
+    Public health probe with real dependency checks.
+
+    Returns 200 with status="ok" if all dependencies respond, status="degraded"
+    if one optional dep is down, status="error" if a hard dep (Supabase) fails.
+    Uptime monitors should treat anything other than HTTP 200 + status=="ok"
+    as a page-worthy alert.
+
+    Checks:
+      db:           Supabase round-trip (head request to clients table)
+      claude_api:   ANTHROPIC_API_KEY present (we don't actually call Claude
+                    on health — would burn budget)
+      smtp_config:  At least one INBOX_*_PASSWORD env var present
+    """
+    checks: dict = {}
+    db_ok = False
+    try:
+        # Cheap probe — count(*) on a small table that always has at least the
+        # current operator. Times out fast under network failure.
+        _supabase.table("clients").select("id", count="exact").limit(1).execute()
+        db_ok = True
+        checks["db"] = "ok"
+    except Exception as exc:
+        checks["db"] = f"error: {str(exc)[:120]}"
+
+    checks["claude_api"] = "ok" if os.getenv("ANTHROPIC_API_KEY", "") else "missing"
+
+    inbox_creds = any(os.getenv(f"INBOX_{i}_PASSWORD") for i in range(1, 31))
+    checks["smtp_config"] = "ok" if inbox_creds else "missing"
+
+    if not db_ok:
+        status = "error"
+    elif checks["claude_api"] == "missing" or checks["smtp_config"] == "missing":
+        status = "degraded"
+    else:
+        status = "ok"
+
+    return {"status": status, "version": "1.0.0", "checks": checks}
 
 
 @app.get("/metrics", tags=["System"], include_in_schema=False)
@@ -927,8 +963,16 @@ async def send_reply(
     from email.mime.text import MIMEText
     from email.utils import make_msgid, formatdate
 
+    # Prefer the operator's configured sender_name from client_settings.
+    try:
+        from warmup_engine import load_client_settings, resolve_sender_name
+        _settings = load_client_settings(_supabase, client_id)
+        display = resolve_sender_name(sender_email, _settings)
+    except Exception:
+        display = sender_email.split("@")[0].replace(".", " ").title()
+
     msg = MIMEMultipart("alternative")
-    msg["From"] = sender_email
+    msg["From"] = f"{display} <{sender_email}>"
     msg["To"] = prospect_email
     msg["Subject"] = subject
     msg["Date"] = formatdate(localtime=False)

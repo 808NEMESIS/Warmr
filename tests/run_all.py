@@ -60,6 +60,7 @@ TEST_MODULES = [
     "test_reply_features",
     "test_new_safety_features",
     "test_preflight_features",
+    "test_pre_launch_hardening",
 ]
 
 

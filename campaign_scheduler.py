@@ -246,6 +246,33 @@ def load_due_campaign_leads(supabase: Client, campaign_id: str) -> list[dict]:
     return resp.data or []
 
 
+def is_email_hard_bounced(supabase: Client, lead_email: str, client_id: str | None = None) -> bool:
+    """
+    True if this email address has a hard_bounce or spam_complaint logged.
+
+    Sending again to a known-dead address burns reputation and is the kind
+    of mistake spam filters latch onto fast. Best-effort check: any DB error
+    returns False so the pipeline never stalls — daily caps + bounce_handler
+    are the secondary defences.
+    """
+    if not lead_email:
+        return False
+    try:
+        q = (
+            supabase.table("bounce_log")
+            .select("id")
+            .eq("lead_email", lead_email.lower())
+            .in_("bounce_type", ["hard", "spam_complaint"])
+            .limit(1)
+        )
+        # client_id on bounce_log is via inbox_id, not directly — best-effort filter
+        # if the column exists. Safe to skip for global hard bounces.
+        resp = q.execute()
+        return bool(resp.data)
+    except Exception:
+        return False
+
+
 def filter_recent_cross_campaign_touches(
     supabase: Client,
     campaign_leads_rows: list[dict],
@@ -650,7 +677,9 @@ def send_campaign_email(
     domain = inbox_email.split("@")[-1]
     message_id = _generate_message_id(domain)
 
-    sender_name = inbox_email.split("@")[0].replace(".", " ").title()
+    # Prefer the operator's configured sender_name over auto-derived from the
+    # email local-part. "Sami Jansema <info@aeryssolution.nl>" >> "Info Aeryssolution".
+    sender_name = (inbox.get("_sender_name") or "").strip() or inbox_email.split("@")[0].replace(".", " ").title()
     recipient_name = (lead.get("first_name") or "").strip() or lead["email"]
 
     msg = MIMEMultipart("alternative")
@@ -862,6 +891,30 @@ def process_lead(
     if not password:
         logger.error("No SMTP password found in env for inbox %s — skipping.", inbox_email)
         return False
+
+    # Hard-bounce blacklist — refuse to re-send to addresses that have
+    # already returned a 5xx or filed a spam complaint. Reputation guard.
+    if is_email_hard_bounced(supabase, lead.get("email", ""), client_id):
+        logger.info(
+            "Lead %s previously hard-bounced or complained — skipping (campaign %s).",
+            lead.get("email"), campaign.get("name"),
+        )
+        # Mark the campaign_lead so we don't re-attempt every run.
+        try:
+            supabase.table("campaign_leads").update({"status": "bounced"}).eq("id", campaign_lead_id).execute()
+        except Exception:
+            pass
+        return False
+
+    # Pull client_settings once and stash sender_name on the inbox dict so
+    # send_campaign_email picks it up without changing its signature.
+    try:
+        from warmup_engine import load_client_settings, resolve_sender_name, append_signature
+        _settings = load_client_settings(supabase, client_id)
+        inbox["_sender_name"] = resolve_sender_name(inbox_email, _settings)
+        body = append_signature(body, _settings)
+    except Exception as _exc:
+        logger.debug("Could not load client_settings for %s: %s", client_id, _exc)
 
     # ── Per-inbox hourly burst cap ────────────────────────────────────────
     # Gmail/Microsoft throw 421 when we burst. MAX_HOURLY_CAMPAIGN counts

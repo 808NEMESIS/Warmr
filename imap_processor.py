@@ -447,6 +447,9 @@ def send_reply_via_smtp(
 # Path 1: Client inbox spam rescue
 # ---------------------------------------------------------------------------
 
+SPAM_RESCUE_HOURLY_CAP: int = int(os.getenv("WARMR_SPAM_RESCUE_HOURLY_CAP", "5"))
+
+
 def rescue_spam_for_inbox(
     inbox: dict,
     password: str,
@@ -456,8 +459,14 @@ def rescue_spam_for_inbox(
     Connect to a client inbox via IMAP, find the spam/junk folder, and move
     all emails back to the inbox.
 
-    Returns the number of emails rescued (0 if none or folder not found).
-    Each rescued email is logged to warmup_logs and counts towards reputation.
+    Throttled to SPAM_RESCUE_HOURLY_CAP rescues per inbox per hour
+    (default 5). Mark-not-spam at scale is itself a signal Gmail's abuse
+    detection watches for — rescuing 30 mails/hour from spam looks
+    suspicious even when each one is legit.
+
+    Returns the number of emails rescued (0 if none, folder not found, or
+    cap reached). Each rescued email is logged to warmup_logs and counts
+    towards reputation.
     """
     inbox_id: str = inbox["id"]
     inbox_email: str = inbox["email"]
@@ -465,6 +474,30 @@ def rescue_spam_for_inbox(
     reputation_score: float = inbox.get("reputation_score") or 50.0
     imap_host = get_imap_server(provider)
     rescued_count = 0
+
+    # Hourly throttle — count rescues already done in last 60 min.
+    try:
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        cutoff = (_dt.now(_tz.utc) - _td(hours=1)).isoformat()
+        cnt_resp = (
+            supabase.table("warmup_logs")
+            .select("id", count="exact")
+            .eq("inbox_id", inbox_id)
+            .eq("action", "spam_rescued")
+            .gte("timestamp", cutoff)
+            .execute()
+        )
+        already = cnt_resp.count or 0
+        if already >= SPAM_RESCUE_HOURLY_CAP:
+            logger.info(
+                "Inbox %s at spam-rescue cap (%d/%d in last hour) — skipping this run.",
+                inbox_email, already, SPAM_RESCUE_HOURLY_CAP,
+            )
+            return 0
+    except Exception as exc:
+        # Cap check failure is non-fatal — proceed with rescue.
+        logger.debug("Inbox %s: spam-rescue cap check failed (%s)", inbox_email, exc)
+        already = 0
 
     try:
         mail = imaplib.IMAP4_SSL(imap_host, IMAP_PORT)
@@ -497,7 +530,20 @@ def rescue_spam_for_inbox(
             mail.logout()
             return 0
 
-        logger.info("Inbox %s: found %d email(s) in spam — rescuing.", inbox_email, len(ids))
+        # Stay under the hourly cap. `already` is the rescue count from the
+        # last 60 minutes; we may rescue at most (cap - already) more this run.
+        remaining_budget = max(0, SPAM_RESCUE_HOURLY_CAP - already)
+        if remaining_budget == 0:
+            mail.logout()
+            return 0
+        if len(ids) > remaining_budget:
+            logger.info(
+                "Inbox %s: %d in spam, capping rescue to %d this run (already rescued %d/h).",
+                inbox_email, len(ids), remaining_budget, already,
+            )
+            ids = ids[:remaining_budget]
+        else:
+            logger.info("Inbox %s: found %d email(s) in spam — rescuing.", inbox_email, len(ids))
 
         for msg_id in ids:
             try:

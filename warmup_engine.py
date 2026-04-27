@@ -312,6 +312,61 @@ def select_recipient(
     return random.choice(available)
 
 
+def load_client_settings(supabase: Client, client_id: str | None) -> dict:
+    """Fetch client_settings (sender_name, email_signature, etc.) for one client.
+
+    Returns {} on any failure or when client_id is None — callers fall back to
+    auto-derived defaults so the pipeline never blocks.
+    """
+    if not client_id:
+        return {}
+    try:
+        resp = (
+            supabase.table("client_settings")
+            .select("sender_name, email_signature, company_name")
+            .eq("client_id", client_id)
+            .limit(1)
+            .execute()
+        )
+        return (resp.data or [{}])[0] or {}
+    except Exception:
+        return {}
+
+
+def resolve_sender_name(inbox_email: str, settings: dict | None) -> str:
+    """Prefer client_settings.sender_name over auto-derived 'Info Aeryssolution'.
+
+    Falls back to extract_display_name() when no setting is configured —
+    matches the prior behaviour, no regression for clients that haven't
+    filled in their profile yet.
+    """
+    settings = settings or {}
+    explicit = (settings.get("sender_name") or "").strip()
+    if explicit:
+        return explicit
+    return extract_display_name(inbox_email)
+
+
+def append_signature(body: str, settings: dict | None) -> str:
+    """Append client_settings.email_signature to a body if configured.
+
+    Idempotent: if the signature is already present at the end of the body
+    (cosmetic check on last 200 chars), returns the body unchanged. Avoids
+    double signatures when a Claude-generated body already includes one.
+    """
+    settings = settings or {}
+    sig = (settings.get("email_signature") or "").strip()
+    if not sig:
+        return body
+    body = (body or "").rstrip()
+    if not body:
+        return sig
+    tail = body[-200:]
+    if sig and (sig in tail or sig.split("\n")[0] in tail):
+        return body
+    return body + "\n\n" + sig
+
+
 def extract_display_name(email_address: str) -> str:
     """
     Derive a plausible first name from an email address local part.
@@ -542,7 +597,8 @@ def process_inbox(
         return
 
     # ── Step 6: generate email content ────────────────────────────────────
-    sender_name = extract_display_name(inbox_email)
+    settings = load_client_settings(supabase, inbox.get("client_id"))
+    sender_name = resolve_sender_name(inbox_email, settings)
     recipient_name = extract_display_name(recipient["email"])
 
     try:
@@ -550,6 +606,7 @@ def process_inbox(
             claude_client, sender_name, recipient_name,
             supabase=supabase, client_id=inbox.get("client_id"), inbox_id=inbox_id,
         )
+        body = append_signature(body, settings)
     except Exception as exc:
         logger.error("Inbox %s: Claude content generation failed: %s", inbox_email, exc)
         log_action(
