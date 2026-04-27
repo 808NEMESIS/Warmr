@@ -828,6 +828,66 @@ function initProductSwitcher() {
   });
 }
 
+// ── Toast notifications ───────────────────────────────────────────────────────
+// window.showToast(message, type) — type defaults to "info"; use "success" or
+// "error" for coloured variants. Replaces native alert() / inline error blocks.
+// Auto-dismiss after 4s, click to dismiss early. Uses ARIA live region so
+// screen readers announce them.
+
+(function initToasts() {
+  if (typeof window === 'undefined' || window.showToast) return;
+
+  function ensureContainer() {
+    let el = document.getElementById('toast-container');
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = 'toast-container';
+    el.className = 'toast-container';
+    el.setAttribute('role', 'status');
+    el.setAttribute('aria-live', 'polite');
+    el.setAttribute('aria-atomic', 'false');
+    document.body.appendChild(el);
+    return el;
+  }
+
+  const ICONS = { success: '✓', error: '✕', info: 'ℹ' };
+
+  function showToast(message, type) {
+    const kind = (type === 'success' || type === 'error' || type === 'info') ? type : 'info';
+    const container = ensureContainer();
+
+    const toast = document.createElement('div');
+    toast.className = 'toast toast-' + kind;
+    toast.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+
+    const icon = document.createElement('span');
+    icon.className = 'toast-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = ICONS[kind];
+
+    const text = document.createElement('span');
+    text.textContent = String(message || '');
+
+    toast.appendChild(icon);
+    toast.appendChild(text);
+
+    function dismiss() {
+      if (!toast.parentNode) return;
+      toast.classList.add('toast-leave');
+      setTimeout(function() {
+        if (toast.parentNode) toast.parentNode.removeChild(toast);
+      }, 180);
+    }
+
+    toast.addEventListener('click', dismiss);
+    container.appendChild(toast);
+    setTimeout(dismiss, 4000);
+  }
+
+  window.showToast = showToast;
+})();
+
+
 // ── Populate client name in topbar ────────────────────────────────────────────
 
 async function populateTopbar() {

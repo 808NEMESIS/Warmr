@@ -447,14 +447,14 @@ function renderDetail(r) {
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
             Sequence stoppen
           </button>
-          <button class="btn btn-ghost btn-sm" onclick="markUnread('${r.id}')">Als ongelezen markeren</button>
-          <button class="btn btn-ghost btn-sm" onclick="analyzeIntent('${r.id}')" style="color:var(--primary)">🧠 Intent-analyse</button>
-          <button class="btn btn-ghost btn-sm" onclick="aiSuggestReplies('${r.id}')" style="margin-left:auto;color:var(--primary)">✦ AI antwoord suggesties</button>
-          <button class="btn btn-primary btn-sm" onclick="openReplyComposer('${r.id}')">↩ Stuur reply</button>
+          <button class="btn btn-ghost btn-sm" onclick="markUnread('${r.id}')" aria-label="Markeer reply als ongelezen">Als ongelezen markeren</button>
+          <button class="btn btn-ghost btn-sm reply-action-intent" onclick="analyzeIntent('${r.id}')" aria-label="Analyseer prospect-intent met AI">🧠 Intent-analyse</button>
+          <button class="btn btn-ghost btn-sm reply-action-suggest" onclick="aiSuggestReplies('${r.id}')" aria-label="Genereer AI antwoordsuggesties">✦ AI antwoord suggesties</button>
+          <button class="btn btn-primary btn-sm" onclick="openReplyComposer('${r.id}')" aria-label="Open reply composer">↩ Stuur reply</button>
         </div>
-        <div id="intent-analysis-${r.id}" style="display:none;margin-top:.75rem"></div>
-        <div id="ai-replies-${r.id}" style="display:none;margin-top:.75rem"></div>
-        <div id="reply-composer-${r.id}" style="display:none;margin-top:.75rem"></div>
+        <div id="intent-analysis-${r.id}" class="intent-card-slot" hidden></div>
+        <div id="ai-replies-${r.id}" class="ai-suggestions-slot" hidden></div>
+        <div id="reply-composer-${r.id}" class="reply-composer-slot" hidden></div>
       </div>
 
       <!-- Sidebar -->
@@ -572,67 +572,89 @@ async function updateClassification(id, cls) {
   } catch(e) { toast(e.message,'error'); }
 }
 
+function _esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function _show(el) { if (el) el.removeAttribute('hidden'); }
+function _hide(el) { if (el) el.setAttribute('hidden', ''); }
+
 async function analyzeIntent(replyId) {
   var box = document.getElementById('intent-analysis-' + replyId);
   if (!box) return;
-  box.style.display = 'block';
-  box.innerHTML = '<div class="text-sm text-muted" style="padding:.5rem">Psychologische analyse draait…</div>';
+  _show(box);
+  box.innerHTML = '<div class="intent-status-loading" role="status">Psychologische analyse draait…</div>';
   try {
     var res = await api('/replies/' + replyId + '/analyze-intent', { method: 'POST' });
     var conf = Math.round((res.confidence || 0) * 100);
-    var badge = function(label, val) {
-      return '<div style="display:inline-flex;flex-direction:column;padding:.375rem .625rem;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-right:.5rem;margin-bottom:.375rem;min-width:8rem">' +
-        '<span style="font-size:.6875rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.03em">' + label + '</span>' +
-        '<span style="font-size:.8125rem;font-weight:700;color:var(--text)">' + (val || '—') + '</span>' +
-        '</div>';
-    };
+    function badge(label, val) {
+      return (
+        '<div class="intent-badge">' +
+          '<span class="intent-badge-label">' + _esc(label) + '</span>' +
+          '<span class="intent-badge-value">' + _esc(val || '—') + '</span>' +
+        '</div>'
+      );
+    }
+    var snippetEsc = _esc(res.recommended_snippet || '');
+    var snippetForBtn = (res.recommended_snippet || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
     box.innerHTML =
-      '<div style="padding:1rem;border:1.5px solid var(--primary);border-radius:10px;background:var(--surface)">' +
-        '<div style="font-weight:700;margin-bottom:.625rem;color:var(--primary);display:flex;justify-content:space-between">' +
+      '<div class="intent-card" role="region" aria-label="Intent-analyse resultaat">' +
+        '<div class="intent-card-header">' +
           '<span>🧠 Psychologische read</span>' +
-          '<span style="font-size:.75rem;color:var(--text-muted)">Vertrouwen: ' + conf + '%</span>' +
+          '<span class="intent-card-confidence" aria-label="Vertrouwen ' + conf + ' procent">Vertrouwen: ' + conf + '%</span>' +
         '</div>' +
         badge('Objection', res.objection_type) +
         badge('Emotion', res.emotion) +
         badge('Influence-lever', res.cialdini_principle) +
-        '<div style="margin-top:.75rem;padding:.625rem;background:var(--bg);border-radius:6px">' +
-          '<div style="font-size:.75rem;color:var(--text-muted);margin-bottom:.25rem">💡 Mijn suggestie</div>' +
-          '<div style="font-size:.875rem;color:var(--text);line-height:1.5">' + (res.suggested_approach || '—') + '</div>' +
+        '<div class="intent-section">' +
+          '<div class="intent-section-label">💡 Mijn suggestie</div>' +
+          '<div class="intent-section-body">' + _esc(res.suggested_approach || '—') + '</div>' +
         '</div>' +
         (res.recommended_snippet ? (
-          '<div style="margin-top:.5rem;padding:.625rem;background:var(--bg);border-radius:6px">' +
-            '<div style="font-size:.75rem;color:var(--text-muted);margin-bottom:.25rem;display:flex;justify-content:space-between">' +
+          '<div class="intent-section">' +
+            '<div class="intent-section-label">' +
               '<span>✏️ Concept-reply</span>' +
-              '<button class="btn btn-ghost btn-sm" style="font-size:.7rem" onclick="useSnippet(\'' + replyId + '\',\'' + res.recommended_snippet.replace(/'/g,"\\'").replace(/\n/g,'\\n') + '\')">Gebruik</button>' +
+              '<button class="btn btn-ghost btn-sm" aria-label="Gebruik concept als reply"' +
+                ' onclick="useSnippet(\'' + replyId + '\',\'' + snippetForBtn + '\')">Gebruik</button>' +
             '</div>' +
-            '<div style="font-size:.8125rem;color:var(--text);line-height:1.5;white-space:pre-wrap">' + res.recommended_snippet + '</div>' +
+            '<div class="intent-section-body" style="white-space:pre-wrap">' + snippetEsc + '</div>' +
           '</div>'
         ) : '') +
-        (res.rationale ? '<div style="margin-top:.5rem;font-size:.75rem;color:var(--text-muted);font-style:italic">' + res.rationale + '</div>' : '') +
+        (res.rationale ? '<div class="intent-rationale">' + _esc(res.rationale) + '</div>' : '') +
       '</div>';
   } catch (e) {
-    box.innerHTML = '<div class="text-sm text-muted">Analyse mislukt: ' + e.message + '</div>';
+    box.innerHTML = '<div class="intent-status-error" role="alert">Analyse mislukt: ' + _esc(e.message) + '</div>';
+    if (window.showToast) window.showToast('Intent-analyse mislukt', 'error');
   }
 }
 
 function openReplyComposer(replyId, prefill) {
   var box = document.getElementById('reply-composer-' + replyId);
   if (!box) return;
-  box.style.display = 'block';
-  var escaped = (prefill || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  _show(box);
+  var bodyId = 'reply-body-' + replyId;
   box.innerHTML =
-    '<div style="padding:1rem;border:1.5px solid var(--border);border-radius:10px;background:var(--surface)">' +
-      '<div style="font-weight:700;margin-bottom:.5rem">↩ Reply naar prospect</div>' +
-      '<textarea id="reply-body-' + replyId + '" rows="6" style="width:100%;padding:.625rem;border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:.875rem;resize:vertical">' + escaped + '</textarea>' +
-      '<div style="display:flex;gap:.5rem;margin-top:.625rem;justify-content:flex-end">' +
-        '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'reply-composer-' + replyId + '\').style.display=\'none\'">Annuleer</button>' +
-        '<button class="btn btn-primary btn-sm" onclick="sendReply(\'' + replyId + '\')">Verstuur via SMTP</button>' +
+    '<div class="reply-composer" role="region" aria-label="Reply composer">' +
+      '<div class="reply-composer-header">↩ Reply naar prospect</div>' +
+      '<label for="' + bodyId + '" class="visually-hidden">Reply tekst</label>' +
+      '<textarea id="' + bodyId + '" class="reply-composer-body" rows="6" aria-label="Reply tekst">' + _esc(prefill || '') + '</textarea>' +
+      '<div class="reply-composer-actions">' +
+        '<button class="btn btn-ghost btn-sm" aria-label="Annuleer reply"' +
+          ' onclick="closeReplyComposer(\'' + replyId + '\')">Annuleer</button>' +
+        '<button class="btn btn-primary btn-sm" aria-label="Verstuur reply via SMTP"' +
+          ' onclick="sendReply(\'' + replyId + '\')">Verstuur via SMTP</button>' +
       '</div>' +
     '</div>';
   setTimeout(function() {
-    var ta = document.getElementById('reply-body-' + replyId);
+    var ta = document.getElementById(bodyId);
     if (ta) ta.focus();
   }, 50);
+}
+
+function closeReplyComposer(replyId) {
+  _hide(document.getElementById('reply-composer-' + replyId));
 }
 
 function useSnippet(replyId, snippet) {
@@ -641,7 +663,10 @@ function useSnippet(replyId, snippet) {
 
 async function sendReply(replyId) {
   var ta = document.getElementById('reply-body-' + replyId);
-  if (!ta || !ta.value.trim()) { alert('Lege reply kan niet verstuurd worden.'); return; }
+  if (!ta || !ta.value.trim()) {
+    if (window.showToast) window.showToast('Lege reply kan niet verstuurd worden.', 'error');
+    return;
+  }
   var body = ta.value;
   if (!confirm('Verstuur deze reply direct via SMTP?')) return;
   try {
@@ -652,20 +677,22 @@ async function sendReply(replyId) {
     var box = document.getElementById('reply-composer-' + replyId);
     if (box) {
       box.innerHTML =
-        '<div style="padding:.875rem;border:1.5px solid #4caf50;border-radius:10px;background:var(--surface);color:#2e7d32">' +
-        '✓ Verstuurd naar ' + res.sent_to + (res.threaded ? ' (in bestaande thread)' : ' (nieuwe thread)') +
+        '<div class="reply-composer-success" role="status">' +
+          '✓ Verstuurd naar ' + _esc(res.sent_to) +
+          (res.threaded ? ' (in bestaande thread)' : ' (nieuwe thread)') +
         '</div>';
     }
+    if (window.showToast) window.showToast('Reply verstuurd naar ' + res.sent_to, 'success');
   } catch (e) {
-    alert('Send mislukt: ' + e.message);
+    if (window.showToast) window.showToast('Send mislukt: ' + e.message, 'error');
   }
 }
 
 async function aiSuggestReplies(replyId) {
   var container = document.getElementById('ai-replies-' + replyId);
   if (!container) return;
-  container.style.display = 'block';
-  container.innerHTML = '<div class="text-sm text-muted" style="padding:.5rem">AI denkt na…</div>';
+  _show(container);
+  container.innerHTML = '<div class="intent-status-loading" role="status">AI denkt na…</div>';
 
   var reply = _current;
   if (!reply) return;
@@ -681,21 +708,25 @@ async function aiSuggestReplies(replyId) {
     });
     var suggestions = res.suggestions || [];
     if (!suggestions.length) {
-      container.innerHTML = '<div class="text-sm text-muted">Geen suggesties beschikbaar.</div>';
+      container.innerHTML = '<div class="intent-status-loading">Geen suggesties beschikbaar.</div>';
       return;
     }
     container.innerHTML = suggestions.map(function(s) {
-      return '<div style="border:1.5px solid var(--border);border-radius:8px;padding:.875rem;margin-bottom:.5rem;cursor:pointer;transition:all .15s" ' +
-        'onmouseover="this.style.borderColor=\'var(--primary)\'" onmouseout="this.style.borderColor=\'var(--border)\'">' +
-        '<div style="display:flex;justify-content:space-between;margin-bottom:.375rem">' +
-          '<span style="font-weight:700;font-size:.8125rem;color:var(--primary)">' + s.label + '</span>' +
-          '<button class="btn btn-ghost btn-sm" style="font-size:.7rem" onclick="copyToClipboard(\'' + s.body.replace(/'/g,"\\'").replace(/\n/g,'\\n') + '\',\'Antwoord\')">Kopieer</button>' +
-        '</div>' +
-        '<div style="font-size:.8125rem;color:var(--text);line-height:1.5;white-space:pre-wrap">' + s.body + '</div>' +
-      '</div>';
+      var bodyForBtn = (s.body || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
+      return (
+        '<div class="ai-suggestion-card" role="article" aria-label="' + _esc(s.label) + ' suggestie">' +
+          '<div class="ai-suggestion-header">' +
+            '<span class="ai-suggestion-label">' + _esc(s.label) + '</span>' +
+            '<button class="btn btn-ghost btn-sm" aria-label="Kopieer suggestie naar klembord"' +
+              ' onclick="copyToClipboard(\'' + bodyForBtn + '\',\'Antwoord\')">Kopieer</button>' +
+          '</div>' +
+          '<div class="ai-suggestion-body">' + _esc(s.body) + '</div>' +
+        '</div>'
+      );
     }).join('');
   } catch (e) {
-    container.innerHTML = '<div class="text-sm text-muted">AI fout: ' + e.message + '</div>';
+    container.innerHTML = '<div class="intent-status-error" role="alert">AI fout: ' + _esc(e.message) + '</div>';
+    if (window.showToast) window.showToast('AI-suggesties mislukt', 'error');
   }
 }
 </script>

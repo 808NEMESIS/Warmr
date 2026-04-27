@@ -1160,8 +1160,268 @@ h4 { font-size: 1.125rem; }
   100% { background-position: -200% center; }
 }
 
+/* ── Accessibility helpers ─────────────────────────────────── */
+/* Hide visually but keep readable for screen readers. WCAG-standard pattern. */
+.visually-hidden,
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Visible-on-focus for skip-to-content style links. */
+.visually-hidden:focus,
+.sr-only:focus {
+  position: static;
+  width: auto; height: auto;
+  margin: 0; clip: auto;
+  white-space: normal;
+}
+
 /* ── Scrollbar ─────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
 ::-webkit-scrollbar-thumb:hover { background: #c8cad4; }
+
+/* ============================================================
+   Reply features — intent analysis + reply composer
+   Used by unified-inbox.html. All values come from design tokens
+   so dark mode + token changes work without HTML edits.
+   ============================================================ */
+
+/* Inline action-bar buttons that highlight in primary colour */
+.reply-action-intent,
+.reply-action-suggest { color: var(--primary); }
+.reply-action-suggest { margin-left: auto; }
+
+/* Slots that hold the dynamically-inserted intent / suggestions / composer.
+   `hidden` is the canonical way to hide; this just spaces them when shown. */
+.intent-card-slot,
+.ai-suggestions-slot,
+.reply-composer-slot { margin-top: .75rem; }
+
+.intent-card {
+  padding: 1rem;
+  border: 1.5px solid var(--primary);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+.intent-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 700;
+  margin-bottom: .625rem;
+  color: var(--primary);
+}
+.intent-card-confidence {
+  font-size: .75rem;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.intent-badge {
+  display: inline-flex;
+  flex-direction: column;
+  padding: .375rem .625rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-badge);
+  margin-right: .5rem;
+  margin-bottom: .375rem;
+  min-width: 8rem;
+}
+.intent-badge-label {
+  font-size: .6875rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+.intent-badge-value {
+  font-size: .8125rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.intent-section {
+  margin-top: .75rem;
+  padding: .625rem;
+  background: var(--bg);
+  border-radius: var(--radius-badge);
+}
+.intent-section-label {
+  font-size: .75rem;
+  color: var(--muted);
+  margin-bottom: .25rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.intent-section-body {
+  font-size: .875rem;
+  color: var(--text);
+  line-height: 1.5;
+}
+.intent-rationale {
+  margin-top: .5rem;
+  font-size: .75rem;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.intent-status-loading,
+.intent-status-error {
+  padding: .5rem;
+  font-size: .8125rem;
+  color: var(--muted);
+}
+.intent-status-error { color: var(--danger); }
+
+.reply-composer {
+  padding: 1rem;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+.reply-composer-header {
+  font-weight: 700;
+  margin-bottom: .5rem;
+  color: var(--text);
+}
+.reply-composer-body {
+  width: 100%;
+  padding: .625rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  font-family: inherit;
+  font-size: .875rem;
+  resize: vertical;
+  background: var(--surface);
+  color: var(--text);
+}
+.reply-composer-body:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(108, 92, 231, .15);
+}
+.reply-composer-actions {
+  display: flex;
+  gap: .5rem;
+  margin-top: .625rem;
+  justify-content: flex-end;
+}
+.reply-composer-success {
+  padding: .875rem;
+  border: 1.5px solid var(--success);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  color: var(--success);
+  font-weight: 500;
+}
+
+.ai-suggestion-card {
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: .875rem;
+  margin-bottom: .5rem;
+  cursor: pointer;
+  transition: border-color var(--transition);
+}
+.ai-suggestion-card:hover { border-color: var(--primary); }
+.ai-suggestion-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: .375rem;
+}
+.ai-suggestion-label {
+  font-weight: 700;
+  font-size: .8125rem;
+  color: var(--primary);
+}
+.ai-suggestion-body {
+  font-size: .8125rem;
+  color: var(--text);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+/* ============================================================
+   Toast notifications
+   Replaces native alert() / confirm() with consistent feedback.
+   Stack bottom-right, auto-dismiss after 4s, click to dismiss early.
+   Use via window.showToast(message, "success" | "error" | "info").
+   ============================================================ */
+
+.toast-container {
+  position: fixed;
+  bottom: 1.25rem;
+  right: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  z-index: 9999;
+  pointer-events: none;
+  max-width: calc(100vw - 2.5rem);
+}
+
+.toast {
+  background: var(--surface);
+  color: var(--text);
+  padding: .75rem 1rem;
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-lg);
+  border-left: 4px solid var(--primary);
+  font-size: .875rem;
+  line-height: 1.4;
+  pointer-events: auto;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: .625rem;
+  min-width: 220px;
+  max-width: 420px;
+  animation: toast-in 200ms cubic-bezier(.4, 0, .2, 1);
+}
+.toast.toast-leave {
+  animation: toast-out 180ms ease forwards;
+}
+.toast-success { border-left-color: var(--success); }
+.toast-error   { border-left-color: var(--danger); }
+.toast-info    { border-left-color: var(--info); }
+
+.toast-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+}
+.toast-success .toast-icon { color: var(--success); }
+.toast-error   .toast-icon { color: var(--danger); }
+.toast-info    .toast-icon { color: var(--info); }
+
+@keyframes toast-in {
+  from { transform: translateX(120%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+@keyframes toast-out {
+  from { transform: translateX(0);    opacity: 1; }
+  to   { transform: translateX(120%); opacity: 0; }
+}
+
+/* Mobile: pin to bottom edge, full-ish width */
+@media (max-width: 600px) {
+  .toast-container {
+    left: 1rem;
+    right: 1rem;
+    bottom: 1rem;
+  }
+  .toast { max-width: 100%; min-width: 0; }
+}
