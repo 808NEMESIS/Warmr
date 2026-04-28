@@ -187,8 +187,35 @@
     if (!email || !password) { errEl.textContent = 'Vul e-mail en wachtwoord in.'; errEl.style.display = 'block'; return; }
 
     setLoading(btn, true, 'Inloggen…');
+
+    // Check brute-force lockout before attempting Supabase auth.
+    // Defense-in-depth: an attacker calling Supabase directly bypasses this,
+    // but most credential-stuffing happens through legitimate-looking clients.
+    try {
+      const pre = await fetch(`${window.WARMR_API_BASE || ''}/auth/login-attempt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, success: false, probe: true }),
+      }).then(r => r.json()).catch(() => null);
+      if (pre && pre.blocked) {
+        setLoading(btn, false, 'Inloggen');
+        errEl.textContent = `Te veel mislukte pogingen. Probeer over 15 minuten opnieuw.`;
+        errEl.style.display = 'block';
+        return;
+      }
+    } catch { /* lockout API down — fail open, don't lock the user out */ }
+
     const { data, error } = await _supabase.auth.signInWithPassword({ email, password });
     setLoading(btn, false, 'Inloggen');
+
+    // Record the result so future attempts know to count.
+    try {
+      fetch(`${window.WARMR_API_BASE || ''}/auth/login-attempt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, success: !error }),
+      }).catch(() => {});
+    } catch {}
 
     if (error) { errEl.textContent = error.message; errEl.style.display = 'block'; return; }
 

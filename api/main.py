@@ -342,6 +342,10 @@ async def log_login_attempt(request: Request, body: dict) -> dict:
     """
     email = (body.get("email") or "").strip().lower()[:255]
     success = bool(body.get("success", False))
+    # probe=True is a check-without-logging call from the frontend BEFORE it
+    # tries Supabase auth — this lets the UI block obvious brute-forcers
+    # without inflating the failure count by one per check.
+    probe = bool(body.get("probe", False))
     ip = request.client.host if request.client else None
     ua = request.headers.get("user-agent", "")[:500]
 
@@ -363,16 +367,17 @@ async def log_login_attempt(request: Request, body: dict) -> dict:
 
     blocked = fail_count >= 5 and not success
 
-    # Log the attempt
-    try:
-        _supabase.table("login_attempts").insert({
-            "email": email,
-            "ip_address": ip,
-            "success": success,
-            "user_agent": ua,
-        }).execute()
-    except Exception as exc:
-        logger.debug("Failed to log login attempt: %s", exc)
+    # Probes never write — only real attempts (success or fail) are logged.
+    if not probe:
+        try:
+            _supabase.table("login_attempts").insert({
+                "email": email,
+                "ip_address": ip,
+                "success": success,
+                "user_agent": ua,
+            }).execute()
+        except Exception as exc:
+            logger.debug("Failed to log login attempt: %s", exc)
 
     # Optional urgent notification to admins after 10+ failures
     if fail_count >= 10 and not success:

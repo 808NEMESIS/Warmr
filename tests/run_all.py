@@ -61,6 +61,7 @@ TEST_MODULES = [
     "test_new_safety_features",
     "test_preflight_features",
     "test_pre_launch_hardening",
+    "test_security_hardening",
 ]
 
 

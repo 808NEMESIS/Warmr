@@ -268,6 +268,23 @@ def _pick_fallback_table(client_settings: dict | None) -> dict[str, str]:
     return _FALLBACKS_BY_LANG.get(str(lang).lower(), _FALLBACKS_BY_LANG["en"])
 
 
+# Maximum length for any single substituted variable value. Prevents a
+# malicious or corrupted lead row from blowing up email body size beyond
+# what SMTP will accept, and bounds memory usage during bulk render.
+_MAX_VAR_LENGTH: int = 200
+
+
+def _safe_truncate(value: str) -> str:
+    """Clip a substituted value to MAX_VAR_LENGTH chars, preserving readability.
+
+    For values longer than the cap, slice at MAX-1 and append '…' so it's
+    obvious the field was truncated rather than silently shortened.
+    """
+    if not value or len(value) <= _MAX_VAR_LENGTH:
+        return value
+    return value[: _MAX_VAR_LENGTH - 1] + "…"
+
+
 def _resolve_var(name: str, lead: dict, client_settings: dict | None = None) -> str:
     """
     Resolve one {{variable}} token against a lead dict and optional client_settings.
@@ -341,7 +358,10 @@ def substitute_variables(text: str, lead: dict, client_settings: dict | None = N
     Unknown tokens are left unchanged (e.g. {{unknown}} stays {{unknown}}).
     """
     def replacer(match: re.Match) -> str:
-        return _resolve_var(match.group(1), lead, client_settings)
+        # _safe_truncate caps each substituted value at _MAX_VAR_LENGTH chars.
+        # Length-bound prevents an oversized lead field (10MB first_name from a
+        # broken import, or a malicious row) from blowing up the email body.
+        return _safe_truncate(_resolve_var(match.group(1), lead, client_settings))
 
     return _VAR_PATTERN.sub(replacer, text)
 

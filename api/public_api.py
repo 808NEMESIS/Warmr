@@ -982,6 +982,14 @@ async def create_webhook(body: WebhookIn, ctx: ApiCtx) -> dict:
     """
     body.validate_events()
 
+    # SSRF guard — reject URLs that would let us POST into the trust boundary.
+    # Re-checked at dispatch time too (DNS rebinding defence).
+    try:
+        from utils.url_safety import assert_url_safe, UnsafeUrlError
+        assert_url_safe(body.url)
+    except UnsafeUrlError as exc:
+        raise HTTPException(status_code=422, detail=f"Webhook URL rejected: {exc}")
+
     secret = secrets.token_hex(32)  # 64-char hex signing secret
     sb = _sb()
 
@@ -1041,6 +1049,12 @@ async def update_webhook(webhook_id: str, body: WebhookPatch, ctx: ApiCtx) -> di
         invalid = set(patch["events"]) - VALID_EVENTS
         if invalid:
             raise HTTPException(status_code=422, detail=f"Unknown events: {', '.join(invalid)}")
+    if "url" in patch:
+        try:
+            from utils.url_safety import assert_url_safe, UnsafeUrlError
+            assert_url_safe(patch["url"])
+        except UnsafeUrlError as exc:
+            raise HTTPException(status_code=422, detail=f"Webhook URL rejected: {exc}")
 
     resp = sb.table("webhooks").update(patch).eq("id", webhook_id).execute()
     return resp.data[0] if resp.data else {}

@@ -149,8 +149,20 @@ def deliver(
         "User-Agent":         "Warmr-Webhooks/1.0",
     }
 
+    # Re-check the URL at dispatch time. DNS rebinding lets an attacker who
+    # was public when the webhook was registered swap to private later — so
+    # the create-time check alone is not enough.
     try:
-        with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+        from utils.url_safety import assert_url_safe, UnsafeUrlError
+        assert_url_safe(webhook["url"])
+    except UnsafeUrlError as exc:
+        logger.warning("Refusing webhook delivery to %s: %s", webhook.get("url"), exc)
+        return False, 0, f"unsafe url: {exc}"
+
+    try:
+        # follow_redirects=False — a 302 to an internal IP would bypass the
+        # SSRF check above. Receivers should not depend on redirects.
+        with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS, follow_redirects=False) as client:
             resp = client.post(webhook["url"], content=body_bytes, headers=headers)
         status_code  = resp.status_code
         body_snippet = resp.text[:500]
