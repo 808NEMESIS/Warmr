@@ -1160,6 +1160,64 @@ h4 { font-size: 1.125rem; }
   100% { background-position: -200% center; }
 }
 
+/* ============================================================
+   Data export grid (settings.html)
+   ============================================================ */
+
+.export-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: .75rem;
+}
+
+.export-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  padding: 1rem;
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-card);
+  cursor: pointer;
+  transition: border-color var(--transition), transform var(--transition), box-shadow var(--transition);
+  font: inherit;
+  color: inherit;
+}
+.export-card:hover {
+  border-color: var(--primary);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+.export-card:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.export-card-label {
+  font-weight: 700;
+  font-size: .9375rem;
+  color: var(--text);
+  margin-bottom: .25rem;
+}
+.export-card-hint {
+  font-size: .75rem;
+  color: var(--muted);
+  margin-bottom: .625rem;
+}
+.export-card-cta {
+  margin-top: auto;
+  font-size: .75rem;
+  font-weight: 600;
+  color: var(--primary);
+}
+
+.export-status {
+  margin-top: .75rem;
+  font-size: .8125rem;
+  color: var(--muted);
+  min-height: 1.25rem;
+}
+
 /* ── Accessibility helpers ─────────────────────────────────── */
 /* Hide visually but keep readable for screen readers. WCAG-standard pattern. */
 .visually-hidden,

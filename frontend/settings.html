@@ -243,6 +243,32 @@
         </div>
       </div>
 
+      <!-- ── Data export ──────────────────────────────────── -->
+      <div class="card">
+        <div style="margin-bottom:1rem">
+          <h3 style="font-family:var(--font-disp);font-size:1.125rem">Data export</h3>
+          <p style="color:var(--muted);font-size:.875rem;margin-top:.25rem">
+            CSV-downloads voor offline analyse in Excel of pandas.
+            JSONB-velden (custom_fields, intent_analysis) zijn al uitgeklapt naar aparte kolommen.
+          </p>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="export-days-input">Periode (dagen)</label>
+          <input id="export-days-input" type="number" class="form-input" value="30" min="1" max="365"
+                 style="max-width:8rem" aria-label="Aantal dagen aan data om te exporteren"
+                 onchange="renderExportLinks()">
+        </div>
+
+        <div id="export-links" class="export-grid"></div>
+        <div id="export-status" class="export-status" role="status" aria-live="polite"></div>
+
+        <p style="color:var(--muted);font-size:.75rem;margin-top:1rem">
+          Rate-limit: 5 downloads per uur per API-key. Voor ad-hoc queries
+          gebruik liever Supabase SQL Editor.
+        </p>
+      </div>
+
     </div>
   </div>
 </div>
@@ -321,8 +347,80 @@
       await populateTopbar();
       await loadProfile();
       await loadCrm();
+      renderExportLinks();
     } catch (e) { console.error(e); }
   })();
+
+  // ── Data export ──────────────────────────────────────────────────────────
+  // The /export/*.csv endpoints already exist server-side. We surface them
+  // as buttons that fetch with the user's auth token, then trigger the
+  // browser save-dialog. Direct <a href> would not include the JWT.
+
+  var _EXPORTS = [
+    { path: '/export/leads.csv',                       file: 'leads.csv',                       label: 'Leads',              hint: 'incl. Heatr cf_* kolommen',     scoped: false },
+    { path: '/export/email-events.csv',                file: 'email-events.csv',                label: 'Email events',       hint: 'sent / open / click / reply',    scoped: true  },
+    { path: '/export/replies.csv',                     file: 'replies.csv',                     label: 'Replies',            hint: 'incl. intent_* kolommen',        scoped: true  },
+    { path: '/export/cost-breakdown.csv',              file: 'cost-breakdown.csv',              label: 'Claude kosten',      hint: 'per call, per context',          scoped: true  },
+    { path: '/export/inbox-reputation-history.csv',    file: 'inbox-reputation-history.csv',    label: 'Reputation history', hint: 'daily snapshot per inbox',       scoped: true  },
+  ];
+
+  function renderExportLinks() {
+    var grid = document.getElementById('export-links');
+    if (!grid) return;
+    grid.innerHTML = _EXPORTS.map(function(e) {
+      return (
+        '<button class="export-card" type="button" onclick="downloadExport(\'' + e.path + '\',\'' + e.file + '\',' + e.scoped + ')" aria-label="Download ' + e.label + ' CSV">' +
+          '<div class="export-card-label">' + e.label + '</div>' +
+          '<div class="export-card-hint">' + e.hint + '</div>' +
+          '<div class="export-card-cta">↓ CSV</div>' +
+        '</button>'
+      );
+    }).join('');
+  }
+
+  async function downloadExport(path, filename, scoped) {
+    var status = document.getElementById('export-status');
+    status.textContent = 'Genereren…';
+    try {
+      var url = path;
+      if (scoped) {
+        var days = parseInt(document.getElementById('export-days-input').value, 10) || 30;
+        days = Math.max(1, Math.min(365, days));
+        url += '?days=' + days;
+        // For the file name, prefix with the period so users know which window it is
+        filename = 'warmr-' + filename.replace('.csv', '') + '-' + days + 'd.csv';
+      } else {
+        filename = 'warmr-' + filename;
+      }
+
+      var session = await getSession();
+      var token = session && session.access_token;
+      if (!token) { throw new Error('Niet ingelogd.'); }
+
+      var resp = await fetch((window.WARMR_API_BASE || '') + url, {
+        headers: { 'Authorization': 'Bearer ' + token },
+      });
+      if (!resp.ok) {
+        var detail = await resp.text();
+        throw new Error('HTTP ' + resp.status + ': ' + detail.slice(0, 200));
+      }
+      var blob = await resp.blob();
+      var blobUrl = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+      status.textContent = '✓ ' + filename + ' gedownload';
+      if (window.showToast) window.showToast(filename + ' gedownload', 'success');
+    } catch (e) {
+      status.textContent = '';
+      if (window.showToast) window.showToast('Export mislukt: ' + e.message, 'error');
+      else alert('Export mislukt: ' + e.message);
+    }
+  }
 
   function switchTab(tab) {
     document.querySelectorAll('.settings-tab').forEach(function(t) { t.classList.toggle('active', t.dataset.tab === tab); });
