@@ -62,6 +62,7 @@ TEST_MODULES = [
     "test_preflight_features",
     "test_pre_launch_hardening",
     "test_security_hardening",
+    "test_csv_exports",
 ]
 
 

@@ -6201,6 +6201,233 @@ def _unsub_html(title: str, message: str, show_button: bool, token: str = "") ->
 </html>'''
 
 
+# ===========================================================================
+# CSV EXPORTS — for offline data analysis (pandas / Excel / Looker)
+# ===========================================================================
+# All endpoints are scoped to the authenticated client_id, return 200 with a
+# Content-Disposition: attachment header, and are rate-limited to prevent
+# abuse (full table scrapes). Default days=30, max 365.
+#
+# Approach for JSONB columns (custom_fields, intent_analysis): flatten the
+# top-level keys into named CSV columns, prefixed with the source field
+# name. Nested objects are JSON-stringified so the CSV stays one-row-per-
+# record. Empty values become blank cells.
+
+def _csv_response(rows: list[dict], filename: str) -> Response:
+    """Render a list of dicts to a CSV Response. Empty list → header-only file."""
+    out = io.StringIO()
+    if rows:
+        # Stable column order: union of all keys, sorted with id/created columns first
+        all_keys: dict[str, None] = {}
+        for r in rows:
+            for k in r.keys():
+                all_keys.setdefault(k, None)
+        priority = [k for k in ("id", "lead_id", "campaign_id", "inbox_id",
+                                 "client_id", "email", "from_email",
+                                 "created_at", "timestamp", "received_at", "date")
+                    if k in all_keys]
+        rest = sorted(k for k in all_keys if k not in priority)
+        fieldnames = priority + rest
+
+        import csv
+        w = csv.DictWriter(out, fieldnames=fieldnames, extrasaction="ignore")
+        w.writeheader()
+        for r in rows:
+            w.writerow({k: _csv_value(r.get(k)) for k in fieldnames})
+    return Response(
+        content=out.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _csv_value(v) -> str:
+    """Coerce any DB value into a CSV-safe string."""
+    if v is None:
+        return ""
+    if isinstance(v, (str, int, float, bool)):
+        return str(v)
+    # Lists / dicts → JSON; keeps it parseable downstream.
+    import json as _j
+    try:
+        return _j.dumps(v, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        return str(v)
+
+
+def _flatten_jsonb(rows: list[dict], col: str, prefix: str | None = None) -> list[dict]:
+    """Pop a JSONB column off each row and merge its keys back as `prefix_<key>`."""
+    p = prefix or col
+    out = []
+    for r in rows:
+        copy = dict(r)
+        blob = copy.pop(col, None) or {}
+        if isinstance(blob, dict):
+            for k, v in blob.items():
+                copy[f"{p}_{k}"] = v
+        out.append(copy)
+    return out
+
+
+@app.get("/export/leads.csv", tags=["Exports"])
+@limiter.limit("5/hour")
+async def export_leads_csv(request: Request, client_id: ClientId) -> Response:
+    """All leads for this client, with custom_fields flattened to columns."""
+    resp = (
+        _supabase.table("leads")
+        .select("*")
+        .eq("client_id", client_id)
+        .order("created_at", desc=True)
+        .limit(50000)
+        .execute()
+    )
+    rows = _flatten_jsonb(resp.data or [], "custom_fields", prefix="cf")
+    return _csv_response(rows, "warmr-leads.csv")
+
+
+@app.get("/export/email-events.csv", tags=["Exports"])
+@limiter.limit("5/hour")
+async def export_email_events_csv(
+    request: Request,
+    client_id: ClientId,
+    days: int = Query(default=30, ge=1, le=365),
+) -> Response:
+    """Sent/opened/clicked/replied/bounced events over the requested window."""
+    cutoff = _days_ago_utc(days)
+    resp = (
+        _supabase.table("email_events")
+        .select("*")
+        .eq("client_id", client_id)
+        .gte("timestamp", cutoff)
+        .order("timestamp", desc=True)
+        .limit(100000)
+        .execute()
+    )
+    return _csv_response(resp.data or [], f"warmr-email-events-{days}d.csv")
+
+
+@app.get("/export/replies.csv", tags=["Exports"])
+@limiter.limit("5/hour")
+async def export_replies_csv(
+    request: Request,
+    client_id: ClientId,
+    days: int = Query(default=30, ge=1, le=365),
+) -> Response:
+    """All captured prospect replies + intent-analysis fields flattened."""
+    cutoff = _days_ago_utc(days)
+    resp = (
+        _supabase.table("reply_inbox")
+        .select("*")
+        .eq("client_id", client_id)
+        .gte("received_at", cutoff)
+        .order("received_at", desc=True)
+        .limit(50000)
+        .execute()
+    )
+    rows = _flatten_jsonb(resp.data or [], "intent_analysis", prefix="intent")
+    # Strip the body field — it's prose that bloats the CSV. Keep first 500 chars.
+    for r in rows:
+        body = r.get("body")
+        if isinstance(body, str) and len(body) > 500:
+            r["body"] = body[:500] + "…"
+    return _csv_response(rows, f"warmr-replies-{days}d.csv")
+
+
+@app.get("/export/cost-breakdown.csv", tags=["Exports"])
+@limiter.limit("5/hour")
+async def export_cost_breakdown_csv(
+    request: Request,
+    client_id: ClientId,
+    days: int = Query(default=30, ge=1, le=365),
+) -> Response:
+    """
+    Claude API costs per call for this client, with `context` column showing
+    where the spend went (warmup_generation / reply_classification /
+    intent_analyse / enrichment / etc.). Pivot in Excel for "spend by feature".
+    """
+    cutoff = _days_ago_utc(days)
+    resp = (
+        _supabase.table("api_cost_log")
+        .select("*")
+        .eq("client_id", client_id)
+        .gte("date", cutoff[:10])
+        .order("date", desc=True)
+        .limit(50000)
+        .execute()
+    )
+    return _csv_response(resp.data or [], f"warmr-cost-breakdown-{days}d.csv")
+
+
+@app.get("/export/inbox-reputation-history.csv", tags=["Exports"])
+@limiter.limit("5/hour")
+async def export_inbox_reputation_csv(
+    request: Request,
+    client_id: ClientId,
+    days: int = Query(default=90, ge=1, le=365),
+) -> Response:
+    """
+    Per-inbox per-day snapshot of reputation_score and activity counts,
+    derived from warmup_logs (each row carries reputation_score_at_time +
+    inbox_id). Use this to chart reputation drift over time per inbox.
+    """
+    cutoff = _days_ago_utc(days)
+    # Constrain to this client's inboxes first
+    inb = (
+        _supabase.table("inboxes")
+        .select("id, email")
+        .eq("client_id", client_id)
+        .execute()
+    )
+    inbox_map = {row["id"]: row["email"] for row in (inb.data or [])}
+    if not inbox_map:
+        return _csv_response([], f"warmr-inbox-reputation-{days}d.csv")
+
+    logs = (
+        _supabase.table("warmup_logs")
+        .select("inbox_id, action, reputation_score_at_time, daily_volume, timestamp")
+        .in_("inbox_id", list(inbox_map.keys()))
+        .gte("timestamp", cutoff)
+        .order("timestamp", desc=False)
+        .limit(100000)
+        .execute()
+    )
+    raw = logs.data or []
+
+    # Aggregate by (inbox, day): pick last reputation_score, count actions.
+    from collections import defaultdict
+    buckets: dict[tuple[str, str], dict] = defaultdict(lambda: {
+        "sent": 0, "received": 0, "spam_rescued": 0, "replied": 0, "errors": 0,
+        "reputation_score_eod": None,
+    })
+    for row in raw:
+        day = (row.get("timestamp") or "")[:10]
+        key = (row["inbox_id"], day)
+        b = buckets[key]
+        action = row.get("action") or ""
+        if action in b:
+            b[action] += 1
+        elif action == "error":
+            b["errors"] += 1
+        rs = row.get("reputation_score_at_time")
+        if rs is not None:
+            b["reputation_score_eod"] = rs
+
+    out_rows = []
+    for (inbox_id, day), b in sorted(buckets.items()):
+        out_rows.append({
+            "date":                  day,
+            "inbox_id":              inbox_id,
+            "email":                 inbox_map.get(inbox_id, ""),
+            "reputation_score_eod":  b["reputation_score_eod"],
+            "sent":                  b["sent"],
+            "received":              b["received"],
+            "spam_rescued":          b["spam_rescued"],
+            "replied":               b["replied"],
+            "errors":                b["errors"],
+        })
+    return _csv_response(out_rows, f"warmr-inbox-reputation-{days}d.csv")
+
+
 # ---------------------------------------------------------------------------
 _FRONTEND_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
 
