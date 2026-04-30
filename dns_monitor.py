@@ -23,7 +23,6 @@ Or call run_dns_checks(sb) / run_blacklist_checks(sb) from n8n HTTP endpoint.
 
 import logging
 import os
-import socket
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -32,7 +31,7 @@ import dns.resolver
 from dotenv import load_dotenv
 from supabase import Client, create_client
 
-from api.dns_check import check_spf, check_dkim, check_dmarc, check_mx
+from api.dns_check import check_spf, check_dkim, check_dmarc
 
 load_dotenv()
 

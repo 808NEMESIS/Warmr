@@ -63,8 +63,9 @@ def test_rate_limit_key_does_not_leak_raw_key():
 def test_leads_bulk_has_stricter_limit_than_default():
     """POST /leads/bulk must be decorated with a per-endpoint limit.
     The limiter tracks endpoint-specific limits in its _route_limits registry."""
-    from api import public_api  # noqa: F401 — import to register routes
+    from api import public_api
     from api.rate_limiter import limiter
+    _ = public_api  # imported for side-effect (route registration)
 
     route_limits = limiter._route_limits  # slowapi internal, stable enough for a test
     # Keys are the qualname of the handler function
@@ -79,8 +80,9 @@ def test_leads_bulk_has_stricter_limit_than_default():
 
 
 def test_leads_single_has_its_own_limit():
-    from api import public_api  # noqa: F401
+    from api import public_api
     from api.rate_limiter import limiter
+    _ = public_api  # imported for side-effect (route registration)
     keys = list(limiter._route_limits.keys())
     single_key = [k for k in keys if "public_create_leads" in k and "bulk" not in k]
     assert single_key, f"Expected public_create_leads in route_limits, got: {keys}"

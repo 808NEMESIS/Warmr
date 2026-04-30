@@ -24,7 +24,6 @@ from dotenv import load_dotenv
 load_dotenv()
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Optional
-from uuid import UUID, uuid4
 
 import httpx
 import pandas as pd
@@ -1322,8 +1321,6 @@ async def domain_age(domain_id: str, client_id: ClientId) -> dict:
     domain_name = row.get("domain", "")
     created = row.get("created_at", "")
 
-    # Attempt WHOIS-style check via DNS SOA record
-    import dns.resolver
     age_days = None
     warning = None
     try:
@@ -1562,7 +1559,7 @@ async def trigger_enrichment_queue(
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         if project_root not in sys.path:
             sys.path.insert(0, project_root)
-        from enrichment_queue import MAX_CONCURRENT, fetch_pending_jobs, run_cycle  # noqa: PLC0415
+        from enrichment_queue import fetch_pending_jobs, run_cycle  # noqa: PLC0415
         import enrichment_queue as eq
         eq.MAX_CONCURRENT = lim
         sb = _supabase

@@ -15,7 +15,6 @@ Supabase itself also enforces its own minimum (6 chars), so this is additive.
 from __future__ import annotations
 
 import re
-from typing import Iterable
 
 MIN_LENGTH = 12
 MAX_LENGTH = 128

@@ -1029,7 +1029,6 @@ def process_campaign(
     campaign_name: str = campaign.get("name") or campaign_id
     daily_limit: int = int(campaign.get("daily_limit") or 50)
     bounce_threshold: float = float(campaign.get("bounce_threshold") or 0.03)
-    client_id: str = campaign.get("client_id") or ""
 
     tz = _get_tz(campaign)
 

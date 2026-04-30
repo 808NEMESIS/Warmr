@@ -30,7 +30,7 @@ import logging
 import os
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any
 
 from dotenv import load_dotenv
 from supabase import Client, create_client

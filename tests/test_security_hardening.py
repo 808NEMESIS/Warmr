@@ -9,7 +9,6 @@ tests/test_security_hardening.py — security hardening features.
 
 from __future__ import annotations
 
-import socket
 import sys
 from pathlib import Path
 
@@ -25,7 +24,7 @@ def test_https_public_url_is_safe():
 
 
 def test_http_scheme_rejected_by_default():
-    from utils.url_safety import is_url_safe, UnsafeUrlError, assert_url_safe
+    from utils.url_safety import UnsafeUrlError, assert_url_safe
     try:
         assert_url_safe("http://example.com/")
     except UnsafeUrlError as exc:
@@ -81,7 +80,7 @@ def test_dns_resolves_to_private_rejected(monkeypatch):
     This is the DNS-rebinding attack vector. We monkeypatch getaddrinfo so the
     test is hermetic."""
     from utils import url_safety
-    fake = [(socket.AF_INET, 0, 0, "", ("10.0.0.5", 0))]
+    # Mock the address resolver so a public-looking hostname returns a 10.x address
     monkeypatch.setattr(url_safety, "_resolve_addresses", lambda h: ["10.0.0.5"])
     assert url_safety.is_url_safe("https://attacker.example/") is False
 

@@ -12,7 +12,6 @@ Called from reply_classifier.py when a reply is classified as 'interested',
 or from imap_processor.py when any reply is detected.
 """
 
-import json
 import logging
 import os
 from typing import Any

@@ -15,7 +15,6 @@ Called by imap_processor.py when a real (non-warmup) reply is detected.
 
 import logging
 import os
-from typing import Optional
 
 import anthropic
 from dotenv import load_dotenv

@@ -20,7 +20,6 @@ Minimum sample requirement: MIN_SENDS_PER_VARIANT = 100 (from CLAUDE.md).
 import hashlib
 import math
 import logging
-from typing import Optional
 
 from supabase import Client
 

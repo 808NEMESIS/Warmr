@@ -36,7 +36,6 @@ Environment variables:
 
 import imaplib
 import logging
-import math
 import os
 import time
 from collections import defaultdict
@@ -403,7 +402,6 @@ def _test_imap_login(email: str, password: str) -> bool:
     Times out after IMAP_TIMEOUT seconds.
     """
     try:
-        import socket
         with imaplib.IMAP4_SSL("imap.gmail.com", 993) as conn:
             conn.socket().settimeout(IMAP_TIMEOUT)
             conn.login(email, password)

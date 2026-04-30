@@ -27,8 +27,8 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import date, datetime, timezone
-from typing import Any, Optional
+from datetime import date
+from typing import Any
 
 import anthropic
 

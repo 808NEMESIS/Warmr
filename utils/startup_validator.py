@@ -30,7 +30,6 @@ import os
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 _GREEN  = "\033[92m"
