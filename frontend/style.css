@@ -1218,6 +1218,83 @@ h4 { font-size: 1.125rem; }
   min-height: 1.25rem;
 }
 
+/* ============================================================
+   API keys (settings.html)
+   ============================================================ */
+
+.apikey-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: .875rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  margin-bottom: .5rem;
+}
+.apikey-row:hover { border-color: var(--primary-lt); }
+
+.apikey-meta { min-width: 0; }
+.apikey-name {
+  font-weight: 600;
+  font-size: .9375rem;
+  color: var(--text);
+  margin-bottom: .25rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.apikey-info {
+  font-size: .75rem;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem .875rem;
+}
+.apikey-perm-chip {
+  display: inline-block;
+  padding: .15rem .5rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-badge);
+  font-size: .6875rem;
+  margin-right: .25rem;
+}
+
+.apikey-perms {
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  padding: .625rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+}
+.apikey-perm {
+  display: flex;
+  align-items: flex-start;
+  gap: .5rem;
+  font-size: .8125rem;
+  cursor: pointer;
+}
+.apikey-perm input[type="checkbox"] { margin-top: .15rem; flex-shrink: 0; }
+
+.apikey-once-warning {
+  padding: .75rem .875rem;
+  background: #fff7e6;
+  border: 1px solid #fdcb6e;
+  border-radius: var(--radius-card);
+  font-size: .8125rem;
+  color: #7a5500;
+  margin-bottom: 1rem;
+  line-height: 1.5;
+}
+html[data-theme="dark"] .apikey-once-warning {
+  background: rgba(253, 203, 110, .12);
+  color: #fdcb6e;
+}
+
 /* ── Accessibility helpers ─────────────────────────────────── */
 /* Hide visually but keep readable for screen readers. WCAG-standard pattern. */
 .visually-hidden,

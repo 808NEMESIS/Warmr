@@ -269,6 +269,87 @@
         </p>
       </div>
 
+      <!-- ── API keys ─────────────────────────────────────── -->
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;margin-bottom:1rem">
+          <div>
+            <h3 style="font-family:var(--font-disp);font-size:1.125rem">API keys</h3>
+            <p style="color:var(--muted);font-size:.875rem;margin-top:.25rem;max-width:48rem">
+              Voor externe integraties zoals Heatr. Een raw key wordt exact één keer
+              getoond bij aanmaak — daarna alleen de permissions en het laatste
+              gebruikstijdstip.
+            </p>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="openApiKeyModal()" aria-label="Nieuwe API key aanmaken">
+            + Nieuwe key
+          </button>
+        </div>
+
+        <div id="apikeys-list" role="list" aria-label="Bestaande API keys">
+          <div class="empty-state" style="padding:1.5rem"><span class="empty-state-sub">Laden…</span></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ── API Key Create Modal ─────────────────────────────── -->
+<div class="modal-overlay" id="modal-apikey" style="display:none" onclick="if(event.target===this)closeApiKeyModal()">
+  <div class="modal" style="max-width:520px" role="dialog" aria-labelledby="apikey-modal-title" aria-modal="true">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
+      <h3 id="apikey-modal-title" style="font-family:var(--font-disp);font-size:1.25rem">Nieuwe API key</h3>
+      <button class="btn-icon" onclick="closeApiKeyModal()" aria-label="Sluiten">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <!-- Step A: form -->
+    <div id="apikey-form-step">
+      <div class="form-group">
+        <label class="form-label" for="apikey-name">Naam *</label>
+        <input id="apikey-name" type="text" class="form-input" placeholder="bv. Heatr integration" maxlength="80">
+        <div class="form-hint">Alleen voor jouw overzicht — wordt niet aan de prospect getoond.</div>
+      </div>
+
+      <div class="form-group">
+        <span class="form-label">Permissions *</span>
+        <div class="apikey-perms">
+          <label class="apikey-perm"><input type="checkbox" name="apikey-perm" value="read_leads" checked> <span><strong>read_leads</strong> — leads + status uitlezen</span></label>
+          <label class="apikey-perm"><input type="checkbox" name="apikey-perm" value="write_leads" checked> <span><strong>write_leads</strong> — leads aanmaken / wijzigen / enrichen</span></label>
+          <label class="apikey-perm"><input type="checkbox" name="apikey-perm" value="trigger_campaigns" checked> <span><strong>trigger_campaigns</strong> — campagnes aanmaken, leads toevoegen, pause/resume</span></label>
+          <label class="apikey-perm"><input type="checkbox" name="apikey-perm" value="read_analytics" checked> <span><strong>read_analytics</strong> — campaign-stats + inbox-availability</span></label>
+        </div>
+      </div>
+
+      <div id="apikey-error" class="form-error" style="display:none" role="alert"></div>
+
+      <div style="display:flex;gap:.5rem;justify-content:flex-end;margin-top:1rem">
+        <button class="btn btn-ghost" onclick="closeApiKeyModal()">Annuleer</button>
+        <button class="btn btn-primary" id="apikey-create-btn" onclick="createApiKey()">Aanmaken</button>
+      </div>
+    </div>
+
+    <!-- Step B: show raw key once -->
+    <div id="apikey-result-step" style="display:none">
+      <div class="apikey-once-warning" role="alert">
+        <strong>⚠ Kopieer de key nu.</strong> Hij wordt <em>nooit</em> meer getoond.
+        Verlies = nieuwe key aanmaken.
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="apikey-raw">Jouw nieuwe API key</label>
+        <div style="display:flex;gap:.5rem;align-items:stretch">
+          <input id="apikey-raw" type="text" class="form-input" readonly style="font-family:monospace;font-size:.875rem">
+          <button class="btn btn-secondary btn-sm" onclick="copyApiKeyToClipboard()" aria-label="Kopieer key">Kopieer</button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Heatr-style env snippet</label>
+        <textarea id="apikey-env-snippet" class="form-input" readonly rows="3" style="font-family:monospace;font-size:.8125rem;resize:vertical"></textarea>
+      </div>
+      <div style="display:flex;justify-content:flex-end">
+        <button class="btn btn-primary" onclick="confirmApiKeyStored()">Ik heb hem opgeslagen</button>
+      </div>
     </div>
   </div>
 </div>
@@ -348,8 +429,160 @@
       await loadProfile();
       await loadCrm();
       renderExportLinks();
+      loadApiKeys();
     } catch (e) { console.error(e); }
   })();
+
+  // ── API keys ─────────────────────────────────────────────────────────────
+  // Backend lives at /apikeys (NOT under /api/v1) — it's a dashboard-auth
+  // endpoint, not a public-API endpoint. JWT is the credential.
+
+  function _fmtDate(iso) {
+    if (!iso) return '—';
+    try { return new Date(iso).toLocaleDateString('nl-NL', { day: '2-digit', month: 'short', year: 'numeric' }); }
+    catch { return iso.slice(0, 10); }
+  }
+
+  async function loadApiKeys() {
+    var box = document.getElementById('apikeys-list');
+    if (!box) return;
+    try {
+      var keys = await api('/apikeys');
+      if (!keys || !keys.length) {
+        box.innerHTML = '<div class="empty-state" style="padding:1.5rem">' +
+          '<div class="empty-state-title">Nog geen API keys</div>' +
+          '<div class="empty-state-sub">Maak er één aan voor Heatr of een andere integratie.</div>' +
+        '</div>';
+        return;
+      }
+      box.innerHTML = keys.map(function(k) {
+        var perms = (k.permissions || []).map(function(p) {
+          return '<span class="apikey-perm-chip">' + _esc(p) + '</span>';
+        }).join('');
+        var lastUsed = k.last_used_at ? _fmtDate(k.last_used_at) : 'Nooit gebruikt';
+        return (
+          '<div class="apikey-row" role="listitem">' +
+            '<div class="apikey-meta">' +
+              '<div class="apikey-name">' + _esc(k.name || '(naamloos)') + '</div>' +
+              '<div class="apikey-info">' +
+                '<span>Aangemaakt: ' + _fmtDate(k.created_at) + '</span>' +
+                '<span>Laatst gebruikt: ' + _esc(lastUsed) + '</span>' +
+              '</div>' +
+              '<div style="margin-top:.4rem">' + perms + '</div>' +
+            '</div>' +
+            '<button class="btn btn-danger btn-sm" aria-label="Revoke API key ' + _esc(k.name || '') + '" onclick="revokeApiKey(\'' + k.id + '\',\'' + _esc(k.name || '').replace(/\\/g,"\\\\").replace(/'/g,"\\'") + '\')">' +
+              'Revoke' +
+            '</button>' +
+          '</div>'
+        );
+      }).join('');
+    } catch (e) {
+      box.innerHTML = '<div class="empty-state-sub" style="color:var(--danger)">Laden mislukt: ' + _esc(e.message) + '</div>';
+    }
+  }
+
+  function _esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function openApiKeyModal() {
+    document.getElementById('apikey-form-step').style.display = 'block';
+    document.getElementById('apikey-result-step').style.display = 'none';
+    document.getElementById('apikey-name').value = '';
+    document.getElementById('apikey-error').style.display = 'none';
+    document.querySelectorAll('input[name="apikey-perm"]').forEach(function(cb) { cb.checked = true; });
+    document.getElementById('modal-apikey').style.display = 'flex';
+    setTimeout(function() {
+      var n = document.getElementById('apikey-name');
+      if (n) n.focus();
+    }, 50);
+  }
+
+  function closeApiKeyModal() {
+    document.getElementById('modal-apikey').style.display = 'none';
+  }
+
+  async function createApiKey() {
+    var name = document.getElementById('apikey-name').value.trim();
+    var err = document.getElementById('apikey-error');
+    err.style.display = 'none';
+
+    if (!name) {
+      err.textContent = 'Naam is verplicht.';
+      err.style.display = 'block';
+      return;
+    }
+    var perms = Array.from(document.querySelectorAll('input[name="apikey-perm"]:checked')).map(function(cb) { return cb.value; });
+    if (!perms.length) {
+      err.textContent = 'Kies minstens één permission.';
+      err.style.display = 'block';
+      return;
+    }
+
+    var btn = document.getElementById('apikey-create-btn');
+    btn.disabled = true;
+    btn.textContent = 'Aanmaken…';
+    try {
+      var res = await api('/apikeys', {
+        method: 'POST',
+        body: JSON.stringify({ name: name, permissions: perms }),
+      });
+      var raw = res.key;
+      if (!raw || !raw.indexOf || raw.indexOf('wrmr_') !== 0) {
+        throw new Error('Onverwachte response — geen key in body.');
+      }
+      // Show the raw key in step B
+      document.getElementById('apikey-form-step').style.display = 'none';
+      document.getElementById('apikey-result-step').style.display = 'block';
+      document.getElementById('apikey-raw').value = raw;
+
+      // Build a Heatr-compatible env snippet
+      var apiBase = (window.WARMR_API_BASE || '').replace(/\/$/, '') || (location.origin);
+      var snippet = '# Warmr API credentials (' + name + ')\n' +
+                    'WARMR_API_URL=' + apiBase + '/api/v1\n' +
+                    'WARMR_API_KEY=' + raw + '\n';
+      document.getElementById('apikey-env-snippet').value = snippet;
+
+      if (window.showToast) window.showToast('API key aangemaakt — kopieer hem nu', 'success');
+    } catch (e) {
+      err.textContent = 'Aanmaak mislukt: ' + e.message;
+      err.style.display = 'block';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Aanmaken';
+    }
+  }
+
+  async function copyApiKeyToClipboard() {
+    var input = document.getElementById('apikey-raw');
+    try {
+      await navigator.clipboard.writeText(input.value);
+      if (window.showToast) window.showToast('Key gekopieerd', 'success');
+    } catch {
+      // Fallback: select + execCommand
+      input.select();
+      document.execCommand('copy');
+      if (window.showToast) window.showToast('Key gekopieerd', 'success');
+    }
+  }
+
+  function confirmApiKeyStored() {
+    closeApiKeyModal();
+    loadApiKeys();
+  }
+
+  async function revokeApiKey(id, name) {
+    if (!confirm('Revoke "' + name + '"?\n\nLopende requests met deze key falen vanaf nu met 401. Niet terugdraaibaar.')) return;
+    try {
+      await api('/apikeys/' + id, { method: 'DELETE' });
+      if (window.showToast) window.showToast('Key revoked', 'success');
+      loadApiKeys();
+    } catch (e) {
+      if (window.showToast) window.showToast('Revoke mislukt: ' + e.message, 'error');
+    }
+  }
 
   // ── Data export ──────────────────────────────────────────────────────────
   // The /export/*.csv endpoints already exist server-side. We surface them
