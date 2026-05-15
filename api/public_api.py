@@ -393,11 +393,14 @@ async def _insert_lead_single(
         if existing.data:
             raise HTTPException(status_code=409, detail="Lead with this email already exists.")
 
+    # API-veld `company_name` mapt naar DB-kolom `company` (DB-schema voorrang;
+    # Pydantic-contract blijft stabiel voor externe callers zoals Heatr).
+    # `created_at` heeft DEFAULT now() in DB → expliciete imported_at niet nodig.
     row = {
         "email":         email_lower,
         "first_name":    lead.first_name,
         "last_name":     lead.last_name,
-        "company_name":  lead.company_name,
+        "company":       lead.company_name,
         "job_title":     lead.job_title,
         "domain":        lead.domain or (email_lower.split("@")[1] if "@" in email_lower else None),
         "phone":         lead.phone,
@@ -405,7 +408,6 @@ async def _insert_lead_single(
         "custom_fields": lead.custom_fields or {},
         "status":        "new",
         "client_id":     ctx.client_id,
-        "imported_at":   _NOW_UTC(),
     }
 
     try:
@@ -501,11 +503,13 @@ async def _insert_leads_bulk(
             suppressed += 1
             continue
         existing_emails.add(email_lower)
+        # company_name → company (zie comment in _insert_lead_single).
+        # imported_at gedropt — created_at DEFAULT now() vult automatisch.
         rows_to_insert.append({
             "email":        email_lower,
             "first_name":   lead.first_name,
             "last_name":    lead.last_name,
-            "company_name": lead.company_name,
+            "company":      lead.company_name,
             "job_title":    lead.job_title,
             "domain":       lead.domain or (email_lower.split("@")[1] if "@" in email_lower else None),
             "phone":        lead.phone,
@@ -513,7 +517,6 @@ async def _insert_leads_bulk(
             "custom_fields": lead.custom_fields or {},
             "status":       "new",
             "client_id":    ctx.client_id,
-            "imported_at":  _NOW_UTC(),
         })
 
     # Batch insert in chunks of 500

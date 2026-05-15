@@ -678,7 +678,7 @@ async def list_replies(
     """
     q = (
         _supabase.table("reply_inbox")
-        .select("*, campaigns(name), leads(first_name,last_name,company_name)")
+        .select("*, campaigns(name), leads(first_name,last_name,company)")
         .eq("client_id", client_id)
         .order("received_at", desc=True)
         .limit(limit)
@@ -2622,17 +2622,21 @@ async def import_leads(
             suppressed += 1
             continue
 
+        # API-veld `company_name` mapt naar DB-kolom `company`.
+        # `imported_at` gedropt — DB's `created_at` heeft DEFAULT now().
+        # See docs/sessions/build-log.md (Fix C, 2026-05-08).
+        # NB: `notes` en `campaign_id` blijven hier staan maar bestaan niet
+        # op de leads-tabel — backlog (zie build-log).
         lead_row: dict = {
             "email": raw_email,
             "first_name": str(row["first_name"]).strip() if "first_name" in df.columns and pd.notna(row.get("first_name")) else None,
             "last_name": str(row["last_name"]).strip() if "last_name" in df.columns and pd.notna(row.get("last_name")) else None,
-            "company_name": str(row["company_name"]).strip() if "company_name" in df.columns and pd.notna(row.get("company_name")) else None,
+            "company": str(row["company_name"]).strip() if "company_name" in df.columns and pd.notna(row.get("company_name")) else None,
             "domain": domain,
             "status": "new",
             "campaign_id": campaign_id,
             "client_id": client_id,
             "notes": str(row["notes"]).strip() if "notes" in df.columns and pd.notna(row.get("notes")) else None,
-            "imported_at": _now_utc(),
         }
 
         batch.append(lead_row)

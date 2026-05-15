@@ -38,10 +38,44 @@ def test_file_scheme_rejected():
     assert is_url_safe("file:///etc/passwd") is False
 
 
-def test_localhost_literal_rejected():
+def test_ipv6_loopback_still_rejected():
+    """::1 is not in the localhost dev-exception list — must still fail."""
     from utils.url_safety import is_url_safe
-    assert is_url_safe("https://127.0.0.1/admin") is False
     assert is_url_safe("https://[::1]/") is False
+
+
+# ── Localhost dev exception (added 2026-05-08) ───────────────────────────
+# A scoped carve-out for local Heatr development. Only `localhost` and
+# `127.0.0.1` are exempt from the http-scheme + private-IP guards. Every
+# other private host stays rejected.
+
+def test_localhost_http_allowed():
+    """http://localhost:<port> is the canonical local Heatr webhook URL."""
+    from utils.url_safety import is_url_safe
+    assert is_url_safe("http://localhost:8001/webhooks/warmr") is True
+
+
+def test_127_0_0_1_http_allowed():
+    """http://127.0.0.1:<port> mirrors the localhost case."""
+    from utils.url_safety import is_url_safe
+    assert is_url_safe("http://127.0.0.1:8001/webhooks/warmr") is True
+
+
+def test_http_other_host_still_rejected():
+    """The localhost carve-out must NOT widen to arbitrary http:// hosts."""
+    from utils.url_safety import is_url_safe
+    assert is_url_safe("http://example.com/hook") is False
+
+
+def test_http_subdomain_of_localhost_label_not_implicitly_allowed():
+    """A hostname that merely contains 'localhost' as a substring is NOT exempt.
+    e.g. 'localhost.attacker.com' must resolve via DNS and go through SSRF
+    checks like any other public host."""
+    from utils.url_safety import is_url_safe
+    # If DNS resolves to a public IP, this might pass the SSRF check; if it
+    # doesn't resolve at all, it fails. Either way it must NOT be silently
+    # bypassed via the localhost carve-out.
+    assert is_url_safe("http://localhost.example.com/") is False
 
 
 def test_private_ranges_rejected():

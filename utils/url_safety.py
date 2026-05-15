@@ -34,9 +34,21 @@ class UnsafeUrlError(ValueError):
 
 
 # Allowed URL schemes. https-only by default. Set WARMR_URL_ALLOW_HTTP=1 to
-# permit http (only sensible for local dev/testing of webhook receivers).
+# permit http globally (only sensible for local dev/testing of webhook receivers).
 _ALLOW_HTTP: bool = os.getenv("WARMR_URL_ALLOW_HTTP", "0") == "1"
 _ALLOWED_SCHEMES = ("https", "http") if _ALLOW_HTTP else ("https",)
+
+# Localhost exception added for local Heatr development on 2026-05-08.
+# These hosts are accepted with http:// without setting WARMR_URL_ALLOW_HTTP,
+# AND bypass the private-IP guard (127.0.0.1 is by definition loopback). The
+# exception is host-specific — every other host still goes through the full
+# SSRF policy, so we don't widen the attack surface for production webhooks.
+_LOCALHOST_HOSTS: frozenset[str] = frozenset({"localhost", "127.0.0.1"})
+
+
+def _is_localhost(host: str | None) -> bool:
+    """True when the host is one of the explicit localhost dev exceptions."""
+    return bool(host) and host.lower() in _LOCALHOST_HOSTS
 
 
 def _is_private_ip(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -76,7 +88,13 @@ def assert_url_safe(url: str) -> None:
 
     parsed = urlparse(url.strip())
 
-    if parsed.scheme.lower() not in _ALLOWED_SCHEMES:
+    # Localhost exception (see _LOCALHOST_HOSTS): accept http:// for these
+    # hosts even when global ALLOW_HTTP is off. Other hosts still go through
+    # the strict scheme + private-IP policy.
+    is_localhost = _is_localhost(parsed.hostname)
+    allowed_schemes = ("https", "http") if is_localhost else _ALLOWED_SCHEMES
+
+    if parsed.scheme.lower() not in allowed_schemes:
         raise UnsafeUrlError(
             f"Scheme '{parsed.scheme}' not allowed. Use {' or '.join(_ALLOWED_SCHEMES)}."
         )
@@ -84,6 +102,11 @@ def assert_url_safe(url: str) -> None:
     host = parsed.hostname
     if not host:
         raise UnsafeUrlError("URL has no host.")
+
+    if is_localhost:
+        # Explicit dev exception — skip the loopback/private-IP rejection.
+        # 127.0.0.1 is by definition loopback and would otherwise fail below.
+        return
 
     # Reject literal IP destinations in private ranges before any DNS work.
     try:
