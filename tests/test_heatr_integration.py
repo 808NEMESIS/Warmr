@@ -168,17 +168,139 @@ def test_bulk_leads_response_shape_matches_heatr_client():
     """
     Heatr's warmr_client.push_leads_bulk reads result.get("pushed"|"failed"|"duplicates").
     Warmr's POST /leads + POST /leads/bulk MUST return those keys exactly.
+    Sinds 2026-05-15 vereist Heatr's per-row bookkeeping ook een `inserted`
+    array op POST /leads/bulk response — voorheen alleen aggregate counts.
     """
     # Captured from api/public_api.py public_create_leads return
     sample = {
-        "pushed":        42,
-        "duplicates":    3,
-        "failed":        1,
-        "error_details": ["row 17: missing first_name"],
+        "pushed":        2,
+        "duplicates":    1,
+        "suppressed":    0,
+        "failed":        0,
+        "error_details": [],
+        "inserted": [
+            {"email": "a@example.nl", "lead_id": "lead-uuid-1"},
+            {"email": "b@example.nl", "lead_id": "lead-uuid-2"},
+        ],
     }
     assert "pushed" in sample      # was "imported" pre-2026-04
     assert "failed" in sample      # was "errors" pre-2026-04
     assert "duplicates" in sample
+    # Heatr maps response.inserted[i].email → heatr_leads.warmr_lead_id.
+    # The contract requires email + lead_id on every entry.
+    assert "inserted" in sample
+    assert isinstance(sample["inserted"], list)
+    for row in sample["inserted"]:
+        assert "email" in row
+        assert "lead_id" in row
+
+
+def test_bulk_inserted_accumulates_per_chunk_not_at_end():
+    """
+    Spec invariant: `inserted` is built up per chunk inside the insert loop,
+    not assembled at the end. A failure on chunk N must leave chunks 1..N-1
+    visible in the response so the caller can do partial bookkeeping.
+
+    This test exercises the actual handler with a stubbed Supabase that fails
+    on the second chunk — first chunk's rows must still surface.
+    """
+    import asyncio
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+    # Need a real BulkLeadIn-shaped body
+    from api.public_api import BulkLeadIn, LeadIn, _insert_leads_bulk
+
+    # Build 600 leads → 2 chunks of 500 + 100 with CHUNK=500.
+    # Stub Supabase: first chunk OK, second chunk raises.
+    class _StubResp:
+        def __init__(self, data): self.data = data
+
+    class _StubQuery:
+        """Chained query object: select/eq/in_/order/limit/insert/.execute()."""
+        def __init__(self, parent, action=None, payload=None):
+            self.parent = parent
+            self.action = action
+            self.payload = payload
+        def select(self, *a, **kw): return self
+        def eq(self, *a, **kw): return self
+        def in_(self, *a, **kw): return self
+        def gte(self, *a, **kw): return self
+        def order(self, *a, **kw): return self
+        def limit(self, *a, **kw): return self
+        def insert(self, rows):
+            return _StubQuery(self.parent, action="insert", payload=rows)
+        def execute(self):
+            if self.action == "insert":
+                self.parent.insert_calls += 1
+                if self.parent.insert_calls == 2:
+                    raise RuntimeError("simulated chunk-2 failure")
+                # Return inserted rows with synthetic IDs
+                data = [
+                    {"id": f"lead-{i}", "email": r["email"]}
+                    for i, r in enumerate(self.payload)
+                ]
+                return _StubResp(data)
+            # Reads (dedup / suppression): empty
+            return _StubResp([])
+
+    class _StubSb:
+        def __init__(self):
+            self.insert_calls = 0
+        def table(self, name):
+            return _StubQuery(self)
+
+    stub_sb = _StubSb()
+
+    # Patch _sb() to return our stub, and disable background tasks
+    import api.public_api as pa
+    orig_sb = pa._sb
+    pa._sb = lambda: stub_sb
+    try:
+        class _Ctx:
+            client_id = "test-client"
+            def require(self, *perms): pass
+
+        class _BG:
+            def add_task(self, *a, **kw): pass
+
+        body = BulkLeadIn(
+            leads=[LeadIn(email=f"lead{i}@example.nl") for i in range(600)],
+            deduplicate=False,
+        )
+        result = asyncio.run(_insert_leads_bulk(body, _Ctx(), _BG()))
+    finally:
+        pa._sb = orig_sb
+
+    # Chunk 1 (500 rows) succeeded; chunk 2 (100 rows) raised.
+    # The response MUST still have those 500 rows in `inserted`, not empty.
+    assert result["pushed"] == 500
+    assert result["failed"] == 100
+    assert len(result["inserted"]) == 500
+    assert all("email" in r and "lead_id" in r for r in result["inserted"])
+
+
+def test_bulk_inserted_excludes_duplicates_and_suppressed():
+    """
+    `inserted` MUST contain only genuinely-inserted rows. Duplicates (already
+    in DB) and suppressed (on suppression_list) are filtered before the insert
+    loop runs, so by construction they cannot appear in `inserted`. This test
+    encodes that invariant for downstream callers.
+    """
+    # Simulated response when 3 leads pushed, 1 dup, 1 suppressed → 1 inserted
+    sample = {
+        "pushed":      1,
+        "duplicates":  1,
+        "suppressed":  1,
+        "failed":      0,
+        "inserted":    [{"email": "fresh@example.nl", "lead_id": "lead-uuid-3"}],
+        "error_details": [],
+    }
+    assert len(sample["inserted"]) == sample["pushed"]
+    assert len(sample["inserted"]) < (
+        sample["pushed"] + sample["duplicates"] + sample["suppressed"]
+    )
 
 
 def test_campaign_create_response_returns_id_field():

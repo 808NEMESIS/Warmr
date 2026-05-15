@@ -519,15 +519,22 @@ async def _insert_leads_bulk(
             "client_id":    ctx.client_id,
         })
 
-    # Batch insert in chunks of 500
+    # Batch insert in chunks of 500.
+    # `inserted_rows` accumulates per-chunk so a mid-loop failure still leaves
+    # callers with the successfully-inserted prefix (per-chunk granularity,
+    # not all-or-nothing at the end). Duplicates + suppressed never reach
+    # `rows_to_insert` (filtered above), so by construction they are absent
+    # from `inserted_rows` — only genuinely inserted leads land here.
     CHUNK = 500
+    inserted_rows: list[dict] = []
     for i in range(0, len(rows_to_insert), CHUNK):
         chunk = rows_to_insert[i : i + CHUNK]
         try:
             resp = sb.table("leads").insert(chunk).execute()
-            batch_ids = [r["id"] for r in (resp.data or [])]
-            inserted_ids.extend(batch_ids)
-            imported += len(batch_ids)
+            for r in (resp.data or []):
+                inserted_rows.append({"email": r["email"], "lead_id": r["id"]})
+                inserted_ids.append(r["id"])
+            imported += len(resp.data or [])
         except Exception as exc:
             errors += len(chunk)
             error_details.append(str(exc))
@@ -561,6 +568,11 @@ async def _insert_leads_bulk(
         "suppressed":    suppressed,
         "failed":        errors,
         "error_details": error_details[:20],  # cap to avoid huge responses
+        # Per-row map so bulk callers (e.g. Heatr push_leads_bulk) can
+        # back-fill their own bookkeeping (heatr_leads.warmr_lead_id,
+        # pushed_to_warmr_at, …). Backwards-compatible — older clients
+        # that ignore unknown keys keep working unchanged.
+        "inserted":      inserted_rows,
     }
 
 
