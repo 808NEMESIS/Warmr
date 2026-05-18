@@ -53,6 +53,7 @@ from supabase import Client, create_client
 from api.auth import SUPABASE_JWT_SECRET, get_current_client, require_admin
 from api.dns_check import run_full_dns_check
 from api.public_api import apikey_router, public_router
+from auto_promote import check_and_promote_inbox
 from api.models import (
     AdminClientPatch,
     BlacklistRecoveryStepPatch,
@@ -575,6 +576,37 @@ async def delete_inbox(inbox_id: str, client_id: ClientId):
     # Delete logs first (FK constraint)
     _supabase.table("warmup_logs").delete().eq("inbox_id", inbox_id).execute()
     _supabase.table("inboxes").delete().eq("id", inbox_id).execute()
+
+
+@app.post("/inboxes/{inbox_id}/check-promotion", tags=["Inboxes"])
+async def check_promotion(inbox_id: str, client_id: ClientId):
+    """
+    Evaluate an inbox against the 6 promotion-criteria and promote
+    warmup → ready if all pass.
+
+    Idempotent: already-ready inboxes return promoted=False with
+    reason='already_ready', no status change.
+
+    Returns the criteria_status dict so the operator-UI / Heatr can show
+    which criterion still blocks promotion.
+    """
+    before = _require_row("inboxes", inbox_id, client_id)
+    result = check_and_promote_inbox(inbox_id, _supabase)
+
+    if result.get("promoted"):
+        _log_decision(
+            client_id=client_id,
+            decision_type="inbox_promoted_to_ready",
+            entity_type="inbox",
+            entity_id=inbox_id,
+            entity_name=before.get("email"),
+            before_state={"status": result.get("previous_status")},
+            after_state={"status": result.get("new_status")},
+            reason="auto_promote_criteria_passed",
+            made_by="auto_promote",
+        )
+
+    return result
 
 
 # ---------------------------------------------------------------------------
