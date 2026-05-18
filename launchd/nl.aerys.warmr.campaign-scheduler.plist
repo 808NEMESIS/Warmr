@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>            <string>nl.aerys.warmr.campaign-scheduler</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/nemesis/warmr/.venv/bin/python</string>
+    <string>/Users/nemesis/warmr/campaign_scheduler.py</string>
+  </array>
+  <key>WorkingDirectory</key> <string>/Users/nemesis/warmr</string>
+  <key>StartInterval</key>    <integer>300</integer>
+  <key>RunAtLoad</key>        <true/>
+  <key>StandardOutPath</key>  <string>/Users/nemesis/warmr/logs/campaign-scheduler.out.log</string>
+  <key>StandardErrorPath</key> <string>/Users/nemesis/warmr/logs/campaign-scheduler.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>           <string>/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>

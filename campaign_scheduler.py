@@ -1115,6 +1115,31 @@ def process_campaign(
 # Entry point
 # ---------------------------------------------------------------------------
 
+_BUSINESS_HOURS_START = 7   # 07:00 inclusive
+_BUSINESS_HOURS_END = 19    # 19:00 exclusive
+_BUSINESS_DAYS = {1, 2, 3, 4, 5}  # Mon=1..Fri=5 via isoweekday() (NOT weekday())
+_BUSINESS_TZ = "Europe/Amsterdam"
+
+
+def _within_business_hours(now: datetime | None = None) -> bool:
+    """
+    Return True if `now` is within 07:00-19:00 Europe/Amsterdam, Mon-Fri.
+
+    Used as a global guard at the top of main() so the launchd-fired
+    scheduler (which fires every 5 min, 24/7) only does work during the
+    configured business window. Per-campaign send_window gating still
+    applies inside process_campaign() — this guard is the outer envelope.
+    """
+    try:
+        tz = ZoneInfo(_BUSINESS_TZ)
+    except ZoneInfoNotFoundError:
+        tz = ZoneInfo("UTC")
+    now_local = (now or datetime.now(timezone.utc)).astimezone(tz)
+    if now_local.isoweekday() not in _BUSINESS_DAYS:
+        return False
+    return _BUSINESS_HOURS_START <= now_local.hour < _BUSINESS_HOURS_END
+
+
 def main() -> None:
     """
     Main entry point for the campaign scheduler.
@@ -1124,6 +1149,13 @@ def main() -> None:
     """
     if not SUPABASE_URL or not SUPABASE_KEY:
         logger.critical("SUPABASE_URL or SUPABASE_KEY not set. Aborting.")
+        return
+
+    if not _within_business_hours():
+        logger.info(
+            "Outside business hours (%02d:00-%02d:00 %s, Mon-Fri). Skipping run.",
+            _BUSINESS_HOURS_START, _BUSINESS_HOURS_END, _BUSINESS_TZ,
+        )
         return
 
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
