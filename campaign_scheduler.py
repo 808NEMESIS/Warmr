@@ -909,7 +909,7 @@ def process_lead(
     # Pull client_settings once and stash sender_name on the inbox dict so
     # send_campaign_email picks it up without changing its signature.
     try:
-        from warmup_engine import load_client_settings, resolve_sender_name, append_signature
+        from warmup_engine import resolve_sender_name, append_signature
         _settings = load_client_settings(supabase, client_id)
         inbox["_sender_name"] = resolve_sender_name(inbox_email, _settings)
         body = append_signature(body, _settings)
