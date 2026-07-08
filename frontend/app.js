@@ -772,7 +772,10 @@ async function injectAdminLink() {
 
 // ── Product Switcher (Warmr / Heatr) ─────────────────────────────────────────
 
-const HEATR_URL = window.WARMR_CONFIG?.heatrUrl || 'http://localhost:8001';
+// A0 operator-shell: Heatr draait same-origin onder /heatr/ (Warmr op de root).
+// Default daarom relatief /heatr/ i.p.v. de backend-poort; config.js mag 'm
+// overschrijven voor afwijkende hosting.
+const HEATR_URL = window.WARMR_CONFIG?.heatrUrl || '/heatr/';
 
 function replaceSidebarLogo() {
   var logo = document.querySelector('.sidebar-logo');
@@ -814,7 +817,7 @@ function initProductSwitcher() {
       '</div>' +
       '<svg class="product-switcher-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>' +
     '</a>' +
-    '<a class="product-switcher-item" href="' + HEATR_URL + '" target="_blank">' +
+    '<a class="product-switcher-item" href="' + HEATR_URL + '">' +
       '<div class="product-switcher-icon heatr">H</div>' +
       '<div style="flex:1;min-width:0">' +
         '<div class="product-switcher-name">Heatr</div>' +
