@@ -140,7 +140,7 @@ ORDER BY table_name;
 ### Directe consequenties
 
 1. **`api/rls_hardening_migration.sql` bevatte dezelfde bug** — de policies gebruikten `client_id = auth.uid()::text`. Gefixt (cast verwijderd op alle 5 plekken; `auth.uid()` retourneert zelf al `uuid`) vóórdat het bestand tegen productie gedraaid is. Zie de git-historie van dit bestand voor de exacte diff.
-2. **Critical 4 (TEXT↔UUID cascade-FK-mismatch) uit beide audits is gebaseerd op een onjuiste aanname over kolomtypes.** Of het onderliggende cascade-FK-probleem nog bestaat — en of de FK's uit `tenancy_hardening_migration.sql` al dan niet succesvol zijn aangemaakt — is nu **ONGEVERIFIEERD** en moet opnieuw gecontroleerd worden vóórdat die migratie ter hand wordt genomen. Query:
+2. **CONFIRMED (2026-07-10) — Critical 4 (TEXT↔UUID cascade-FK-mismatch) is in productie al VOLLEDIG opgelost, grondiger dan beide audits en `tenancy_hardening_migration.sql` (die er slechts 9 probeerde) voorzagen.** Gedraaid:
    ```sql
    SELECT conname, conrelid::regclass AS table_name,
           CASE confdeltype WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL'
@@ -150,7 +150,8 @@ ORDER BY table_name;
    WHERE conname LIKE 'fk_%client%'
    ORDER BY table_name;
    ```
-   Als dit 9 rijen met `on_delete=CASCADE` toont: de FK's bestaan al (waarschijnlijk aangemaakt tijdens dezelfde TEXT→UUID-conversie die dit hele schema-verschil verklaart) en Critical 4 is grotendeels al opgelost. Als 0 rijen: het probleem bestaat nog, maar dan zonder de TEXT/UUID-complicatie — een stuk eenvoudiger te fixen dan de audits aannamen.
+   Resultaat: **29 rijen**, allemaal `on_delete=CASCADE` en `convalidated=true`. Dekt vrijwel elke `client_id`-tabel: `inboxes, domains, sending_schedule, campaigns, leads, reply_inbox, analytics_cache, api_keys, webhooks, webhook_logs, webhook_events, enrichment_queue, warmup_network_accounts, network_health_log, diagnostics_log, sequence_suggestions, placement_tests, content_scores, decision_log, experiments, notifications, suppression_list, unsubscribe_tokens, email_tracking, crm_integrations, crm_sync_log, client_settings, api_cost_log, reply_routing_rules, funnel_analytics`.
+   **Gevolg voor Critical 7 (GDPR):** `admin_delete_client` (`api/main.py`) verwijdert expliciet maar 7 tabellen, maar zodra de laatste stap (`DELETE FROM clients`) uitvoert, cascadet Postgres automatisch door naar alle 29 — inclusief `leads`, `reply_inbox`, `webhook_events`, `suppression_list` die de Python-code zelf nooit aanraakt. De "PII blijft als wees achter"-bevinding uit de v2-audit is hiermee grotendeels achterhaald, **op één punt na** (zie punt 5): de *tweede-laags* cascades (via `inbox_id`/`campaign_id`/`lead_id`/`domain_id` i.p.v. rechtstreeks `client_id`) zijn nog niet gecontroleerd.
 3. **CONFIRMED (2026-07-10) — de al-bestaande, al-toegepaste RLS-policies hebben GEEN `::text`-cast-bug.** Gedraaid:
    ```sql
    SELECT schemaname, tablename, policyname, qual
@@ -160,8 +161,20 @@ ORDER BY table_name;
    ```
    Resultaat: alle vijf (`campaigns_isolation`, `domains_isolation`, `inboxes_isolation`, `leads_isolation`, `sending_schedule_isolation`) vergelijken al `client_id = auth.uid()` zonder cast. Wie de TEXT→UUID-conversie heeft gedaan, heeft de policies daarbij correct meegenomen — geen live bug op de kern-tenant-tabellen.
 4. **`full_schema.sql` is aantoonbaar stale voor het hele tenant-datamodel**, niet alleen voor de eerder bekende drift-kolommen (`leads.engagement_score`, `clients.session_version`). Regenereren uit een echte `pg_dump --schema-only` blijft de enige betrouwbare manier om dit bestand weer als waarheid te kunnen gebruiken — behandel elke `TEXT`-claim over `client_id` in dit repo (comments, migraties, audit-documenten) voortaan als **onbevestigd tot tegendeel bewezen**.
+5. **Nog te verifiëren: de tweede-laags cascades** (tabellen die niet rechtstreeks `client_id → clients` refereren maar via een tussenliggende tabel: `warmup_logs.inbox_id → inboxes`, `bounce_log.inbox_id → inboxes`, `email_events.campaign_id/lead_id/inbox_id`, `campaign_leads.lead_id → leads`, `sequence_steps.campaign_id → campaigns`, `dns_check_log.domain_id/blacklist_recoveries.domain_id → domains`, `placement_test_results.test_id → placement_tests`). Query:
+   ```sql
+   SELECT conname, conrelid::regclass AS child_table, confrelid::regclass AS parent_table,
+          CASE confdeltype WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL'
+                           WHEN 'a' THEN 'NO ACTION' ELSE confdeltype END AS on_delete
+   FROM pg_constraint
+   WHERE contype = 'f'
+     AND confrelid IN ('inboxes'::regclass, 'campaigns'::regclass, 'leads'::regclass,
+                        'domains'::regclass, 'placement_tests'::regclass)
+   ORDER BY parent_table, child_table;
+   ```
+   Als deze ook allemaal `CASCADE` tonen: tenant-verwijdering is dan aantoonbaar 100% compleet (beide FK-lagen), en Critical 7's "PII blijft als wees achter"-bevinding is voor de database-laag volledig achterhaald (de resterende GDPR-gaten — reply-unsubscribe niet naar suppression_list, geen retentie-job — blijven wel bestaan, dat zijn geen FK-kwesties).
 
 ### Nog open (blokkeert niets nu, wel relevant voor toekomstig werk)
 
-- **FK-existence check (punt 2 hierboven) — nog niet ontvangen.** De gebruiker plakte per ongeluk de policy-check (punt 3) twee keer; de `pg_constraint`-query staat nog open. Dit is het laatste stuk om Critical 4's status definitief vast te stellen.
+- **Tweede-laags cascade-check (punt 5 hierboven) — nog niet gedraaid.** Laatste stuk om Critical 4 + de FK-kant van Critical 7 definitief te sluiten.
 - `full_schema.sql` regenereren uit een echte dump — niet gestart.
