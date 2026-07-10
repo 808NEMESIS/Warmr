@@ -31,11 +31,35 @@ def test_find_rpc_calls_in_text_extracts_names():
     src = '''
 resp = sb.rpc("try_acquire_job_lock", {"p_job": job_key}).execute()
 other = supabase.rpc('get_daily_api_spend', {"p_client": client_id}).execute()
-not_an_rpc_call = "rpc(\\"decoy\\")"  # inside a string literal — still matches naively, expected
 '''
     names = car.find_rpc_calls_in_text(src)
     assert "try_acquire_job_lock" in names
     assert "get_daily_api_spend" in names
+
+
+def test_ignores_rpc_shaped_text_inside_strings_comments_and_docstrings():
+    """Regression: an earlier regex-based version of this checker matched
+    literal `.rpc("name", ...)` text inside a DOCSTRING as if it were a real
+    call — a false positive on its own source file. AST-based matching only
+    ever sees such text as a string literal's value, never as further code
+    to scan, so none of these should be detected as calls."""
+    src = '''
+"""
+Module docstring example: supabase.rpc("totally_fake_rpc", {...}) is how
+you would call an RPC.
+"""
+
+not_an_rpc_call = "rpc(\\"decoy_in_a_plain_string\\")"  # also not a call
+
+# a comment mentioning .rpc("another_decoy") is not code either
+
+
+def helper():
+    """Docstring: .rpc("nested_decoy") should not be picked up."""
+    return 1
+'''
+    names = car.find_rpc_calls_in_text(src)
+    assert names == set(), f"expected no RPC calls, found: {names}"
 
 
 def test_find_rpc_calls_spanning_multiple_lines_are_still_found():

@@ -3,9 +3,9 @@ scripts/check_atomic_release.py — release-discipline gate (Fase 0.3).
 
 Enforces the rule: code that depends on a database RPC function may never
 be merged without the migration that defines it landing in the same commit
-history. Concretely, every `supabase.rpc("name", ...)` call anywhere in the
-tracked Python codebase must have a matching
-`CREATE [OR REPLACE] FUNCTION name` in a TRACKED api/*.sql file.
+history. Concretely, every genuine `<expr>.rpc(<string literal>, ...)` call
+anywhere in the tracked Python codebase must have a matching
+CREATE [OR REPLACE] FUNCTION for that name in a TRACKED api/*.sql file.
 
 This checks git-tracked files (`git ls-files`), not the working tree — a CI
 checkout only ever contains committed content, so this is exactly the state
@@ -25,35 +25,54 @@ least one RPC call references an undefined function.
 """
 from __future__ import annotations
 
+import ast
 import re
 import subprocess
 import sys
 from pathlib import Path
 
-RPC_CALL_RE = re.compile(r'\.rpc\(\s*["\']([A-Za-z_][A-Za-z0-9_]*)["\']')
 SQL_FUNC_DEF_RE = re.compile(
     r'CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+([A-Za-z_][A-Za-z0-9_]*)',
     re.IGNORECASE,
 )
 
 
-def find_rpc_calls_in_text(text: str) -> set[str]:
-    """Pure function: every RPC name called via .rpc("name") in `text`.
-
-    Matches against the whole text, not line-by-line — supabase-py calls
-    are routinely wrapped, e.g. `.rpc(\n    "name", {...}\n)`, and `\s` in
-    RPC_CALL_RE already spans newlines, so a per-line scan would silently
-    miss those (as it did for utils/cost_tracker.py's real call).
-    """
-    return {m.group(1) for m in RPC_CALL_RE.finditer(text)}
-
-
 def find_rpc_calls_with_lines(text: str) -> list[tuple[str, int]]:
-    """Every (rpc_name, 1-indexed_line_number) match in `text`."""
-    return [
-        (m.group(1), text.count("\n", 0, m.start()) + 1)
-        for m in RPC_CALL_RE.finditer(text)
-    ]
+    """
+    Every (rpc_name, line_number) from a genuine `<expr>.rpc("name", ...)`
+    call in `text`, found by walking the AST rather than regex-matching the
+    raw text. A regex over raw text cannot distinguish real code from a
+    docstring/comment/string that merely LOOKS like a call — this module's
+    own docstring above literally contains the text `.rpc("name", ...)` as
+    an example, which an earlier regex-based version of this file matched
+    as a phantom "name" RPC call on itself. AST parsing only ever sees such
+    text as a string literal's *value*, never as further syntax to search,
+    so it can't be fooled the same way.
+
+    Silently returns [] on a SyntaxError (e.g. a non-Python .py-suffixed
+    fixture in a test) rather than crashing the whole scan.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    found: list[tuple[str, int]] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "rpc"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            found.append((node.args[0].value, node.lineno))
+    return found
+
+
+def find_rpc_calls_in_text(text: str) -> set[str]:
+    """Pure function: every RPC name called via a genuine .rpc("name") call in `text`."""
+    return {name for name, _ in find_rpc_calls_with_lines(text)}
 
 
 def find_rpc_defs_in_text(text: str) -> set[str]:
