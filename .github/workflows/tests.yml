@@ -1,0 +1,68 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel a running job if a new commit is pushed to the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run unit tests
+        env:
+          # Stub credentials so import-time env checks don't kill the process.
+          # Real integration tests (live Supabase / live SMTP) are NOT in run_all.
+          SUPABASE_URL: http://localhost:0
+          SUPABASE_KEY: stub-key
+          ANTHROPIC_API_KEY: stub-key
+          WARMR_MASTER_KEY: ci-master-key-do-not-use-in-prod
+          WARMR_NOTIFY_MUTE: "1"
+        run: |
+          python tests/run_all.py
+
+      - name: Check atomic release discipline (blocking)
+        # Every supabase.rpc("name") call in tracked code must have a matching
+        # CREATE [OR REPLACE] FUNCTION in a tracked api/*.sql migration —
+        # otherwise code that depends on a migration could land without it
+        # (the exact regression documented in WARMR_ENTERPRISE_AUDIT_V2_Q3_2026.md).
+        run: |
+          python scripts/check_atomic_release.py
+
+      - name: Run static analyzer (report-only)
+        # Does not fail the build — the scanner reports known "check-first-by-pk"
+        # patterns that aren't statically verifiable. Output is archived for review.
+        continue-on-error: true
+        run: |
+          python scripts/check_service_role_queries.py | tee /tmp/service-role-scan.log || true
+
+      - name: Upload static-analyzer report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: service-role-scan
+          path: /tmp/service-role-scan.log
+          retention-days: 14

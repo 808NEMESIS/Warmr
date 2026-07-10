@@ -63,6 +63,7 @@ TEST_MODULES = [
     "test_pre_launch_hardening",
     "test_security_hardening",
     "test_csv_exports",
+    "test_check_atomic_release",
 ]
 
 
