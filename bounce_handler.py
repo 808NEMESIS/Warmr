@@ -479,6 +479,18 @@ def main() -> int:
         logger.critical("SUPABASE_URL/KEY not set.")
         return 1
 
+    # Single-runner guard (Critical 5): launchd (1800s) + cron (30 min) + n8n
+    # (/bounces/process) all fire this. Concurrent scans double-apply
+    # reputation penalties and pauses. Only one run proceeds.
+    from utils.job_lock import job_lock
+    with job_lock("bounce_handler") as acquired:
+        if not acquired:
+            logger.info("bounce_handler already running elsewhere — skipping.")
+            return 0
+        return _run()
+
+
+def _run() -> int:
     sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     passwords = load_inbox_passwords()
     inboxes = load_active_inboxes(sb)

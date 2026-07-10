@@ -40,15 +40,36 @@ def main() -> int:
         logger.critical("SUPABASE_URL/KEY not set.")
         return 1
 
+    from utils.job_lock import job_lock
+    with job_lock("daily_reset") as acquired:
+        if not acquired:
+            logger.info("daily_reset already running elsewhere — skipping.")
+            return 0
+        return _run()
+
+
+def _run() -> int:
     sb = create_client(SUPABASE_URL, SUPABASE_KEY)
     today = date.today().isoformat()
 
-    # 1. Reset daily_sent counters
+    # 1. Reset daily_sent counters — GUARDED (Critical 5).
+    # install_launchd.sh runs this HOURLY (StartInterval 3600), so an
+    # unconditional `daily_sent=0` wipes counters warmup/campaign just wrote
+    # and defeats the daily caps. The `last_reset_date` guard makes the reset
+    # a no-op after the first run each calendar day: only rows whose
+    # last_reset_date differs from today are touched (and stamped).
     try:
+        # last_reset_date IS DISTINCT FROM today, expressed for PostgREST:
+        # (last_reset_date IS NULL) OR (last_reset_date <> today). A plain
+        # neq would drop NULL rows (SQL 3-valued logic) and never reset a
+        # never-before-reset inbox.
         resp = sb.table("inboxes").update({
             "daily_sent": 0,
+            "last_reset_date": today,
             "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).neq("status", "retired").execute()
+        }).neq("status", "retired").or_(
+            f"last_reset_date.is.null,last_reset_date.neq.{today}"
+        ).execute()
         logger.info("Reset daily_sent for %d inbox(es).", len(resp.data or []))
     except Exception as exc:
         logger.error("Failed to reset daily_sent: %s", exc)

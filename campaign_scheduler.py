@@ -467,8 +467,11 @@ def update_campaign_lead_after_send(
         "current_step": next_step,
         "next_send_at": next_send_at.isoformat(),
     }
-    if completed:
-        update["status"] = "completed"
+    # Reopen the lead after a successful non-final send: the atomic claim set
+    # status='sending', but the next step must be pickable again (loader filters
+    # status='active'). Final step is marked 'completed' instead.
+    update["status"] = "completed" if completed else "active"
+    update["status_changed_at"] = datetime.now(timezone.utc).isoformat()
     if thread_message_id:
         update["thread_message_id"] = thread_message_id
     if last_inbox_id:
@@ -932,6 +935,35 @@ def process_lead(
     # ── Generate tracking token ──────────────────────────────────────────
     tracking_token = _make_tracking_token(client_id, campaign_id, lead_id, lead.get("email", ""))
 
+    # ── Atomic claim (Critical 5) ─────────────────────────────────────────
+    # Flip status 'active' -> 'sending' BEFORE sending. If two schedulers race
+    # (launchd + n8n, or overlapping runs), Postgres serialises this
+    # conditional UPDATE: only the worker whose WHERE status='active' still
+    # matches gets a row back (PostgREST returns the updated representation).
+    # The loser gets an empty list and must not send. update_campaign_lead_
+    # after_send reopens the lead to 'active' for the next step; the SMTP
+    # failure path below reverts it so a failed send can be retried.
+    try:
+        claim = (
+            supabase.table("campaign_leads")
+            .update({
+                "status": "sending",
+                # Written so reap_stranded_sends.py can age out a lead that
+                # never completes (process crash) — campaign_leads has no
+                # other timestamp column to detect how long it's been stuck.
+                "status_changed_at": datetime.now(timezone.utc).isoformat(),
+            })
+            .eq("id", campaign_lead_id)
+            .eq("status", "active")
+            .execute()
+        )
+    except Exception as exc:
+        logger.error("Claim failed for campaign_lead %s: %s", campaign_lead_id, exc)
+        return False
+    if not (claim.data or []):
+        logger.info("campaign_lead %s already claimed by another run — skipping.", campaign_lead_id)
+        return False
+
     # ── Send ──────────────────────────────────────────────────────────────
     try:
         message_id = send_campaign_email(
@@ -950,6 +982,17 @@ def process_lead(
             supabase, campaign_id, lead_id, step_id, inbox_id, "bounced",
             ab_variant=ab_variant, notes=str(exc),
         )
+        # Release the claim: revert 'sending' -> 'active' so the lead can be
+        # retried on a later run instead of being stranded in 'sending'.
+        try:
+            supabase.table("campaign_leads").update({
+                "status": "active",
+                "status_changed_at": datetime.now(timezone.utc).isoformat(),
+            }).eq(
+                "id", campaign_lead_id
+            ).eq("status", "sending").execute()
+        except Exception:
+            pass
         return False
 
     logger.info(
@@ -1076,10 +1119,20 @@ def process_campaign(
 
     sends_this_run = 0
 
-    for campaign_lead in due_leads:
+    # Renew the outer job_lock("campaign_scheduler") every few leads. Each
+    # send sleeps MIN_SEND_DELAY-MAX_SEND_DELAY seconds, so a campaign with
+    # many due leads can run longer than the lock's TTL even though this
+    # process is still legitimately working — without renewal, a competing
+    # scheduler run could steal the lease mid-run and double-send.
+    from utils.job_lock import renew as _renew_job_lock
+
+    for idx, campaign_lead in enumerate(due_leads):
         if sends_this_run >= remaining_today:
             logger.info("Campaign '%s': hit daily limit during this run.", campaign_name)
             break
+
+        if idx > 0 and idx % 5 == 0:
+            _renew_job_lock("campaign_scheduler", supabase=supabase)
 
         try:
             sent = process_lead(
@@ -1158,28 +1211,37 @@ def main() -> None:
         )
         return
 
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    inbox_credentials = load_inbox_credentials()
+    # Single-runner guard (Critical 5): the committed launchd plist
+    # (StartInterval 300) and the n8n campaign-scheduler workflow can both
+    # fire this. Concurrent runs double-send. Only one holds the lock.
+    from utils.job_lock import job_lock
+    with job_lock("campaign_scheduler") as acquired:
+        if not acquired:
+            logger.info("campaign_scheduler already running elsewhere — skipping.")
+            return
 
-    campaigns = load_active_campaigns(supabase)
+        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        inbox_credentials = load_inbox_credentials()
 
-    if not campaigns:
-        logger.info("No active campaigns found.")
-        return
+        campaigns = load_active_campaigns(supabase)
 
-    logger.info("Processing %d active campaign(s).", len(campaigns))
+        if not campaigns:
+            logger.info("No active campaigns found.")
+            return
 
-    for campaign in campaigns:
-        try:
-            process_campaign(supabase, campaign, inbox_credentials)
-        except Exception as exc:
-            logger.error(
-                "Unhandled error in campaign '%s': %s",
-                campaign.get("name") or campaign.get("id"),
-                exc,
-            )
+        logger.info("Processing %d active campaign(s).", len(campaigns))
 
-    logger.info("Campaign scheduler run complete.")
+        for campaign in campaigns:
+            try:
+                process_campaign(supabase, campaign, inbox_credentials)
+            except Exception as exc:
+                logger.error(
+                    "Unhandled error in campaign '%s': %s",
+                    campaign.get("name") or campaign.get("id"),
+                    exc,
+                )
+
+        logger.info("Campaign scheduler run complete.")
 
 
 if __name__ == "__main__":

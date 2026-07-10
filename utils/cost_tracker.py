@@ -74,8 +74,25 @@ def calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
 def get_daily_spend(supabase_client, client_id: str | None = None) -> float:
     """
     Return total EUR spent today on Claude API calls.
-    Returns 0.0 if the table doesn't exist or query fails.
+
+    Uses the get_daily_api_spend(p_client) Postgres aggregate (see
+    api/critical5_critical6_migration.sql) so the whole day's rows are summed
+    in the database instead of being pulled into Python and summed here. Falls
+    back to the legacy full-scan only if the RPC is unavailable (pre-migration).
+    Returns 0.0 on any failure.
     """
+    # Preferred path: server-side aggregate (SUM in Postgres).
+    try:
+        resp = supabase_client.rpc(
+            "get_daily_api_spend", {"p_client": client_id}
+        ).execute()
+        val = resp.data
+        if val is not None:
+            return round(float(val), 6)
+    except Exception as e:
+        logger.debug("get_daily_api_spend RPC unavailable, falling back to scan: %s", e)
+
+    # Legacy fallback: full scan + Python sum (only if the RPC is missing).
     try:
         today = date.today().isoformat()
         q = supabase_client.table("api_cost_log").select("cost_eur").eq("date", today)
@@ -84,7 +101,7 @@ def get_daily_spend(supabase_client, client_id: str | None = None) -> float:
         res = q.execute()
         return round(sum(r.get("cost_eur") or 0 for r in (res.data or [])), 6)
     except Exception as e:
-        logger.debug("get_daily_spend failed (table may not exist): %s", e)
+        logger.debug("get_daily_spend fallback failed (table may not exist): %s", e)
         return 0.0
 
 

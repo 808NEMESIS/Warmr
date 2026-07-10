@@ -980,7 +980,24 @@ def process_warmup_network_account(
 
 def main() -> None:
     """
-    Main entry point for the IMAP processor.
+    Public entry point. Runs one IMAP cycle under a single-runner lock.
+
+    Single-runner guard (Critical 5): launchd (600s) + cron (10 min) + n8n
+    (/imap/process) can all fire this; overlapping runs double-reply and
+    double-count reputation. The lock ensures only one cycle runs at a time
+    and is always released (even on error) via the context manager.
+    """
+    from utils.job_lock import job_lock
+    with job_lock("imap_processor") as acquired:
+        if not acquired:
+            logger.info("imap_processor already running elsewhere — skipping.")
+            return
+        _run_cycle()
+
+
+def _run_cycle() -> None:
+    """
+    Run one IMAP processing cycle.
 
     1. Process all client inboxes: rescue spam, update reputation.
     2. Process all warmup network accounts: read emails, optionally reply.

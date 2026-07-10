@@ -1507,7 +1507,14 @@ def _run_campaign_scheduler(client_id: str) -> dict:
         sys.path.insert(0, project_root)
     try:
         import campaign_scheduler  # noqa: PLC0415
-        return campaign_scheduler.main(client_id=client_id) or {"ok": True}
+        # campaign_scheduler.main() takes NO arguments (campaign_scheduler.py).
+        # The previous call passed client_id= and raised TypeError on every
+        # invocation, which fell through to the generic handler below — so the
+        # n8n /campaigns/process-queue path never actually sent. The scheduler
+        # already scopes work per-campaign via campaigns.client_id, and its own
+        # job lock prevents a double-run against the launchd plist.
+        campaign_scheduler.main()
+        return {"ok": True}
     except ImportError:
         # campaign_scheduler.py not yet available — basic queue count only
         from datetime import datetime, timezone

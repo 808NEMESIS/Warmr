@@ -26,7 +26,16 @@ import anthropic
 from dotenv import load_dotenv
 from supabase import Client, create_client
 
+from utils.cost_tracker import BudgetExceededError, tracked_claude_call
+from utils.job_lock import job_lock
+
 load_dotenv()
+
+# Fraction of warmup sends (0-100) that use a live Claude generation; the rest
+# are rendered from the zero-LLM spintax bank (warmup_templates). Cost control.
+WARMUP_LLM_SAMPLE_PCT: float = float(os.getenv("WARMUP_LLM_SAMPLE_PCT", "10"))
+# Low daily volume kept for inboxes that have graduated to maintenance mode.
+MAINTENANCE_WARMUP_TARGET: int = int(os.getenv("MAINTENANCE_WARMUP_TARGET", "5"))
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -386,16 +395,41 @@ def generate_email_content(
     supabase: Optional[Client] = None,
     client_id: Optional[str] = None,
     inbox_id: Optional[str] = None,
+    force_template: bool = False,
 ) -> tuple[str, str]:
     """
-    Generate a unique warmup email via Claude Haiku.
+    Return a (subject, body) warmup email.
 
-    Returns a (subject, body) tuple. The prompt instructs Claude to output the
-    subject on the first line prefixed with 'Subject:' and the body after a blank line,
-    so we can parse both from one API call.
+    Cost control (Critical 6): warmup traffic is internal (never seen by a
+    prospect), so by default the content is rendered from the zero-LLM spintax
+    bank in warmup_templates. Only a sampled fraction of sends
+    (WARMUP_LLM_SAMPLE_PCT, default 10%) go through the live model to keep some
+    organic variation. When the daily budget is exhausted the live path
+    degrades to a template instead of aborting the send — BudgetExceededError
+    (and any other live-call failure) is caught here.
 
-    If supabase is provided, uses tracked_claude_call for cost tracking + budget enforcement.
+    Set force_template=True (maintenance mode / ready inboxes) to guarantee
+    zero LLM regardless of sampling.
     """
+    from warmup_templates import render_warmup_email
+
+    def _template() -> tuple[str, str]:
+        return render_warmup_email(WARMUP_LANGUAGE, sender_name, recipient_name)
+
+    # Read the sample rate at call time so tests / env changes take effect.
+    try:
+        sample_pct = float(os.getenv("WARMUP_LLM_SAMPLE_PCT", "10"))
+    except ValueError:
+        sample_pct = 10.0
+
+    use_llm = (
+        not force_template
+        and sample_pct > 0
+        and (random.random() * 100.0) < sample_pct
+    )
+    if not use_llm:
+        return _template()
+
     topics = [
         "project update",
         "meeting follow-up",
@@ -420,23 +454,31 @@ def generate_email_content(
 
     messages = [{"role": "user", "content": prompt}]
 
-    if supabase:
-        from utils.cost_tracker import tracked_claude_call
-        message = tracked_claude_call(
-            claude_client, supabase,
-            model="claude-haiku-4-5-20251001",
-            messages=messages,
-            max_tokens=300,
-            context="warmup_content",
-            client_id=client_id,
-            inbox_id=inbox_id,
-        )
-    else:
-        message = claude_client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=300,
-            messages=messages,
-        )
+    try:
+        if supabase is not None:
+            message = tracked_claude_call(
+                claude_client, supabase,
+                model="claude-haiku-4-5-20251001",
+                messages=messages,
+                max_tokens=300,
+                context="warmup_content",
+                client_id=client_id,
+                inbox_id=inbox_id,
+            )
+        else:
+            message = claude_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=300,
+                messages=messages,
+            )
+    except BudgetExceededError:
+        # Budget exhausted → degrade to a template so the send still goes out.
+        logger.info("Warmup budget reached — using template for this send.")
+        return _template()
+    except Exception as exc:
+        # Any other live-call failure also degrades rather than dropping the send.
+        logger.warning("Live warmup generation failed (%s) — using template.", exc)
+        return _template()
 
     raw = message.content[0].text.strip()
     lines = raw.split("\n")
@@ -550,6 +592,19 @@ def process_inbox(
     week = calculate_warmup_week(warmup_start)
     daily_target = get_weekly_target(week)
 
+    # ── Maintenance mode (Critical 6) ─────────────────────────────────────
+    # auto_promote flips status 'warmup'->'ready' but leaves warmup_active=True,
+    # so a graduated inbox would otherwise keep burning full-volume LIVE Claude
+    # warmup forever. 'ready' (or explicit warmup_mode='maintenance') degrades
+    # to low-volume, template-only traffic. 'off' stops warmup entirely.
+    warmup_mode = (inbox.get("warmup_mode") or "full").lower()
+    if warmup_mode == "off":
+        logger.info("Inbox %s warmup_mode=off — skipping.", inbox_email)
+        return
+    is_maintenance = warmup_mode == "maintenance" or inbox.get("status") == "ready"
+    if is_maintenance:
+        daily_target = min(daily_target, MAINTENANCE_WARMUP_TARGET)
+
     # ── Step 2: persist updated target ────────────────────────────────────
     update_warmup_target(supabase, inbox_id, daily_target)
 
@@ -605,6 +660,7 @@ def process_inbox(
         subject, body = generate_email_content(
             claude_client, sender_name, recipient_name,
             supabase=supabase, client_id=inbox.get("client_id"), inbox_id=inbox_id,
+            force_template=is_maintenance,
         )
         body = append_signature(body, settings)
     except Exception as exc:
@@ -831,6 +887,27 @@ def main() -> None:
     if not dry_run and not is_within_send_window():
         logger.info("Outside send window (%s–%s). Exiting.", SEND_WINDOW_START, SEND_WINDOW_END)
         return
+
+    # Single-runner guard (Critical 5): launchd + cron + n8n can all fire this.
+    # Skip dry-run (read-only) so previews aren't blocked by a live run.
+    if not dry_run:
+        _lock_cm = job_lock("warmup_engine")
+        _acquired = _lock_cm.__enter__()
+        if not _acquired:
+            _lock_cm.__exit__(None, None, None)
+            return
+    else:
+        _lock_cm = None
+
+    try:
+        _run(dry_run)
+    finally:
+        if _lock_cm is not None:
+            _lock_cm.__exit__(None, None, None)
+
+
+def _run(dry_run: bool) -> None:
+    """Body of the warmup run (invoked under the job lock by main())."""
 
     # Validate required config
     if not SUPABASE_URL or not SUPABASE_KEY:

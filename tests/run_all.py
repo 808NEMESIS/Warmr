@@ -64,6 +64,9 @@ TEST_MODULES = [
     "test_security_hardening",
     "test_csv_exports",
     "test_check_atomic_release",
+    "test_scheduler_safety",
+    "test_cost_control",
+    "test_reaper",
 ]
 
 
