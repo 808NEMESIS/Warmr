@@ -7,14 +7,33 @@
 --
 -- Tables secured (all confirmed backend/service-role only — no frontend
 -- anon-key reads; grep of frontend/*.{js,html} returns zero references):
---   webhook_logs             full_schema.sql:322   (client_id TEXT, nullable)
---   webhook_events           full_schema.sql:343   (client_id TEXT NOT NULL, holds lead PII)
---   warmup_network_accounts  full_schema.sql:392   (client_id TEXT nullable; NULL = shared pool)
---   network_health_log       full_schema.sql:410   (client_id TEXT, nullable)
---   placement_test_results   full_schema.sql:486   (NO client_id → via placement_tests.client_id)
---   dns_check_log            full_schema.sql:521   (NO client_id → via domains.client_id)
---   blacklist_recoveries     full_schema.sql:537   (NO client_id → via domains.client_id)
---   unsubscribe_tokens       full_schema.sql:906   (client_id TEXT NOT NULL)
+--   webhook_logs             (client_id UUID, nullable)
+--   webhook_events           (client_id UUID NOT NULL, holds lead PII)
+--   warmup_network_accounts  (client_id UUID nullable; NULL = shared pool)
+--   network_health_log       (client_id UUID, nullable)
+--   placement_test_results   (NO client_id → via placement_tests.client_id)
+--   dns_check_log            (NO client_id → via domains.client_id)
+--   blacklist_recoveries     (NO client_id → via domains.client_id)
+--   unsubscribe_tokens       (client_id UUID NOT NULL)
+--
+-- CORRECTED 2026-07: full_schema.sql documents every client_id column as
+-- TEXT and the original draft of this migration followed that (casting
+-- auth.uid() to ::text to match). Applying api/critical5_critical6_migration.sql
+-- against the real project (zomdrygdcaenjnrrpcpw) surfaced
+-- `ERROR 42883: operator does not exist: uuid = text` on a client_id
+-- comparison, which prompted a full column-type audit:
+--   SELECT table_name, column_name, data_type FROM information_schema.columns
+--   WHERE column_name = 'client_id' ORDER BY table_name;
+-- Result: 31 of 32 client_id columns in production are UUID, not TEXT — the
+-- schema files were stale for the entire tenant model, not just the two
+-- previously-known drift columns (leads.engagement_score, clients.session_
+-- version). The one TEXT exception, custom_oauth_providers.client_id, is an
+-- OAuth-spec client identifier, unrelated to Warmr's tenant model. All
+-- policies below compare directly against auth.uid() (which itself returns
+-- uuid) with NO ::text cast. This also means WARMR_ENTERPRISE_AUDIT_2026-07.md
+-- / _V2's Critical 4 (TEXT<->UUID cascade-FK mismatch) needs re-verification
+-- against live pg_constraint before that migration is attempted — the
+-- premise that client_id is TEXT no longer holds.
 --
 -- STRATEGY
 --   The load-bearing fix is: ENABLE RLS + REVOKE ALL FROM anon, authenticated.
@@ -33,13 +52,13 @@
 --   Tenant-scoped SELECT policies below are DEFENCE-IN-DEPTH. They are
 --   DORMANT while anon/authenticated have no table grant, and only become
 --   active if you later re-GRANT SELECT to authenticated for direct dashboard
---   reads. They mirror the existing policy styles exactly:
---     - direct client_id  → inboxes (full_schema.sql:642-649)
---     - parent subquery   → warmup_logs (full_schema.sql:665-673)
---     - FOR SELECT read    → diagnostics_log (full_schema.sql:782-786)
+--   reads.
 --
 -- Idempotent: safe to run multiple times.
 -- Run in the Supabase SQL editor (or via CLI) with the service role.
+-- IMPORTANT: before running, confirm existing production policies on other
+-- tenant tables (inboxes, leads, campaigns, ...) don't ALSO carry a stale
+-- ::text cast — see the pg_policies check in docs/production_schema_state.md.
 -- ============================================================
 
 BEGIN;
@@ -54,7 +73,7 @@ GRANT  ALL ON webhook_logs TO service_role;
 DROP POLICY IF EXISTS "webhook_logs_isolation" ON webhook_logs;
 CREATE POLICY "webhook_logs_isolation"
   ON webhook_logs FOR SELECT
-  USING (client_id = auth.uid()::text);
+  USING (client_id = auth.uid());
 
 -- ------------------------------------------------------------
 -- 2. webhook_events  — direct client_id (NOT NULL); outbox queue, holds lead PII
@@ -90,7 +109,7 @@ GRANT  ALL ON network_health_log TO service_role;
 DROP POLICY IF EXISTS "network_health_log_isolation" ON network_health_log;
 CREATE POLICY "network_health_log_isolation"
   ON network_health_log FOR SELECT
-  USING (client_id = auth.uid()::text);
+  USING (client_id = auth.uid());
 
 -- ------------------------------------------------------------
 -- 5. placement_test_results  — NO client_id → isolate via placement_tests.client_id
@@ -105,7 +124,7 @@ CREATE POLICY "placement_test_results_isolation"
   ON placement_test_results FOR SELECT
   USING (
     test_id IN (
-      SELECT id FROM placement_tests WHERE client_id = auth.uid()::text
+      SELECT id FROM placement_tests WHERE client_id = auth.uid()
     )
   );
 
@@ -121,7 +140,7 @@ CREATE POLICY "dns_check_log_isolation"
   ON dns_check_log FOR SELECT
   USING (
     domain_id IN (
-      SELECT id FROM domains WHERE client_id = auth.uid()::text
+      SELECT id FROM domains WHERE client_id = auth.uid()
     )
   );
 
@@ -137,7 +156,7 @@ CREATE POLICY "blacklist_recoveries_isolation"
   ON blacklist_recoveries FOR SELECT
   USING (
     domain_id IN (
-      SELECT id FROM domains WHERE client_id = auth.uid()::text
+      SELECT id FROM domains WHERE client_id = auth.uid()
     )
   );
 

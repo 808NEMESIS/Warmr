@@ -84,6 +84,17 @@ UNION ALL SELECT 'leads.funnel_stage', EXISTS (SELECT 1 FROM information_schema.
 
 ---
 
+## 3-bis. RESULTAAT (2026-07-10, door gebruiker uitgevoerd tegen `zomdrygdcaenjnrrpcpw`)
+
+De gebruiker heeft §3A/B niet als losse SELECT gedraaid maar de daadwerkelijke fixes toegepast (zie §6 voor waarom dat een schema-bug blootlegde die eerst gefixt moest worden):
+
+- **`api/rls_emergency_revoke.sql`** (de 8 REVOKE-statements) → **Success**. Het lek is dicht.
+- **`api/critical5_critical6_migration.sql`** → eerste poging faalde op `get_daily_api_spend` (zie §6), gecorrigeerde versie → **Success**. Alle C5/C6-objecten (`increment_daily_sent`, `last_reset_date`, `email_events_sent_once_idx`, `job_locks`, `try_acquire_job_lock`, `release_job_lock`, `campaign_leads.status_changed_at`, `get_daily_api_spend`, `inboxes.warmup_mode`) bestaan nu in productie.
+
+**0.2-besluit: AFGEROND — Optie A (migreren) is uitgevoerd.** De C5/C6-code in `faab47d` is vanaf nu correct in productie: `job_lock` doet echte cross-process-locking, `daily_reset` reset precies één keer per dag, de dagcap-teller is atomisch, de reaper kan gestrande sends vinden, en ready-inboxen degraderen naar maintenance-mode.
+
+---
+
 ## 4. Het 0.2-besluit (afhankelijk van §3A)
 
 **Aanbeveling: Optie A (migratie draaien) — mits §3A "MISSING" toont.** Reden: de C5/C6-migratie is **puur additief en idempotent** (`CREATE … IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`), de argument-namen/kolommen matchen de al-getoetste code (`inbox_uuid`, `p_client`, `warmup_mode`, `last_reset_date` — geverifieerd), en 205/205 tests dekken het gedrag ná migratie. Optie A un-regresseert productie zonder werkende, geteste code weg te gooien; Optie B (rollback) verliest die code en laat de onderliggende bugs (uurlijkse reset, geen lock) terugkeren.
@@ -105,3 +116,53 @@ Ik kan §3 zelf draaien en dit document met echte cijfers vullen zodra één van
 - je draait de queries in §3 en plakt de output hier — dan verwerk ik de interpretatie + het definitieve 0.2-advies.
 
 *Tot dan blijft §3 ONGEVERIFIEERD en is §2 (statisch) het enige harde feit. Geen aannames over de live staat.*
+
+---
+
+## 6. CONFIRMED (2026-07-10, harde productie-evidentie) — `client_id` is UUID, niet TEXT
+
+Tijdens het toepassen van `api/critical5_critical6_migration.sql` gooide Postgres:
+```
+ERROR: 42883: operator does not exist: uuid = text
+LINE: AND (p_client IS NULL OR client_id = p_client);
+```
+op de `get_daily_api_spend`-functie. Dit kon alleen betekenen dat `api_cost_log.client_id` in productie `uuid` is — `full_schema.sql` documenteert het overal als `TEXT`. Vervolgens gedraaid:
+
+```sql
+SELECT table_name, column_name, data_type
+FROM information_schema.columns
+WHERE column_name = 'client_id'
+ORDER BY table_name;
+```
+
+**Resultaat: 31 van de 32 `client_id`-kolommen in productie zijn `uuid`.** De enige uitzondering is `custom_oauth_providers.client_id` (`text`) — dat is de OAuth-*client*-identifier (OAuth 2.0-spec-terminologie), niet Warmr's tenant-identifier, en dus irrelevant voor tenant-isolatie. Volledige lijst (alle `uuid` tenzij anders vermeld): `analytics_cache, api_cost_log, api_keys, campaign_leads, campaigns, client_settings, content_scores, crm_integrations, crm_sync_log, decision_log, diagnostics_log, domains, email_tracking, enrichment_queue, experiments, funnel_analytics, inboxes, leads, network_health_log, notifications, oauth_authorizations, oauth_consents, placement_tests, reply_inbox, reply_routing_rules, sending_schedule, sequence_suggestions, suppression_list, unsubscribe_tokens, warmup_network_accounts, webhook_events, webhook_logs` + `custom_oauth_providers` (**text**, irrelevant hier).
+
+### Directe consequenties
+
+1. **`api/rls_hardening_migration.sql` bevatte dezelfde bug** — de policies gebruikten `client_id = auth.uid()::text`. Gefixt (cast verwijderd op alle 5 plekken; `auth.uid()` retourneert zelf al `uuid`) vóórdat het bestand tegen productie gedraaid is. Zie de git-historie van dit bestand voor de exacte diff.
+2. **Critical 4 (TEXT↔UUID cascade-FK-mismatch) uit beide audits is gebaseerd op een onjuiste aanname over kolomtypes.** Of het onderliggende cascade-FK-probleem nog bestaat — en of de FK's uit `tenancy_hardening_migration.sql` al dan niet succesvol zijn aangemaakt — is nu **ONGEVERIFIEERD** en moet opnieuw gecontroleerd worden vóórdat die migratie ter hand wordt genomen. Query:
+   ```sql
+   SELECT conname, conrelid::regclass AS table_name,
+          CASE confdeltype WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL'
+                            WHEN 'a' THEN 'NO ACTION' ELSE confdeltype END AS on_delete,
+          convalidated
+   FROM pg_constraint
+   WHERE conname LIKE 'fk_%client%'
+   ORDER BY table_name;
+   ```
+   Als dit 9 rijen met `on_delete=CASCADE` toont: de FK's bestaan al (waarschijnlijk aangemaakt tijdens dezelfde TEXT→UUID-conversie die dit hele schema-verschil verklaart) en Critical 4 is grotendeels al opgelost. Als 0 rijen: het probleem bestaat nog, maar dan zonder de TEXT/UUID-complicatie — een stuk eenvoudiger te fixen dan de audits aannamen.
+3. **Nog te verifiëren: hebben de AL BESTAANDE, al-toegepaste RLS-policies (op tabellen als `inboxes`, `leads`, `campaigns` — niet de 8 uit deze migratie) dezelfde `::text`-cast-bug?** Als dat zo is, gooit ELKE query tegen die tabellen via de policy een `uuid = text`-fout — een live, actief production-issue, niet iets uit dit fix-traject. Query om te checken:
+   ```sql
+   SELECT schemaname, tablename, policyname, qual
+   FROM pg_policies
+   WHERE tablename IN ('inboxes', 'leads', 'campaigns', 'domains', 'sending_schedule')
+   ORDER BY tablename, policyname;
+   ```
+   Bekijk de `qual`-kolom (de USING-expressie): als die `auth.uid()::text` bevat, is dit een bestaande, actieve bug — niet enkel in het nu-gefixte `rls_hardening_migration.sql`.
+4. **`full_schema.sql` is aantoonbaar stale voor het hele tenant-datamodel**, niet alleen voor de eerder bekende drift-kolommen (`leads.engagement_score`, `clients.session_version`). Regenereren uit een echte `pg_dump --schema-only` blijft de enige betrouwbare manier om dit bestand weer als waarheid te kunnen gebruiken — behandel elke `TEXT`-claim over `client_id` in dit repo (comments, migraties, audit-documenten) voortaan als **onbevestigd tot tegendeel bewezen**.
+
+### Nog open (blokkeert niets nu, wel relevant voor toekomstig werk)
+
+- FK-existence check (punt 2 hierboven) — nog niet gedraaid.
+- Bestaande-policy-cast check (punt 3 hierboven) — nog niet gedraaid.
+- `full_schema.sql` regenereren uit een echte dump — niet gestart.
