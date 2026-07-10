@@ -151,18 +151,17 @@ ORDER BY table_name;
    ORDER BY table_name;
    ```
    Als dit 9 rijen met `on_delete=CASCADE` toont: de FK's bestaan al (waarschijnlijk aangemaakt tijdens dezelfde TEXT→UUID-conversie die dit hele schema-verschil verklaart) en Critical 4 is grotendeels al opgelost. Als 0 rijen: het probleem bestaat nog, maar dan zonder de TEXT/UUID-complicatie — een stuk eenvoudiger te fixen dan de audits aannamen.
-3. **Nog te verifiëren: hebben de AL BESTAANDE, al-toegepaste RLS-policies (op tabellen als `inboxes`, `leads`, `campaigns` — niet de 8 uit deze migratie) dezelfde `::text`-cast-bug?** Als dat zo is, gooit ELKE query tegen die tabellen via de policy een `uuid = text`-fout — een live, actief production-issue, niet iets uit dit fix-traject. Query om te checken:
+3. **CONFIRMED (2026-07-10) — de al-bestaande, al-toegepaste RLS-policies hebben GEEN `::text`-cast-bug.** Gedraaid:
    ```sql
    SELECT schemaname, tablename, policyname, qual
    FROM pg_policies
    WHERE tablename IN ('inboxes', 'leads', 'campaigns', 'domains', 'sending_schedule')
    ORDER BY tablename, policyname;
    ```
-   Bekijk de `qual`-kolom (de USING-expressie): als die `auth.uid()::text` bevat, is dit een bestaande, actieve bug — niet enkel in het nu-gefixte `rls_hardening_migration.sql`.
+   Resultaat: alle vijf (`campaigns_isolation`, `domains_isolation`, `inboxes_isolation`, `leads_isolation`, `sending_schedule_isolation`) vergelijken al `client_id = auth.uid()` zonder cast. Wie de TEXT→UUID-conversie heeft gedaan, heeft de policies daarbij correct meegenomen — geen live bug op de kern-tenant-tabellen.
 4. **`full_schema.sql` is aantoonbaar stale voor het hele tenant-datamodel**, niet alleen voor de eerder bekende drift-kolommen (`leads.engagement_score`, `clients.session_version`). Regenereren uit een echte `pg_dump --schema-only` blijft de enige betrouwbare manier om dit bestand weer als waarheid te kunnen gebruiken — behandel elke `TEXT`-claim over `client_id` in dit repo (comments, migraties, audit-documenten) voortaan als **onbevestigd tot tegendeel bewezen**.
 
 ### Nog open (blokkeert niets nu, wel relevant voor toekomstig werk)
 
-- FK-existence check (punt 2 hierboven) — nog niet gedraaid.
-- Bestaande-policy-cast check (punt 3 hierboven) — nog niet gedraaid.
+- **FK-existence check (punt 2 hierboven) — nog niet ontvangen.** De gebruiker plakte per ongeluk de policy-check (punt 3) twee keer; de `pg_constraint`-query staat nog open. Dit is het laatste stuk om Critical 4's status definitief vast te stellen.
 - `full_schema.sql` regenereren uit een echte dump — niet gestart.
