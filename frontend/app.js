@@ -138,11 +138,14 @@ function toast(message, type = 'info', duration = 4000) {
   el.className = `toast ${type}`;
   el.innerHTML = `
     <span style="color:${_TOAST_COLORS[type]};flex-shrink:0">${_TOAST_ICONS[type]}</span>
-    <span style="flex:1">${message}</span>
+    <span style="flex:1" class="toast-msg"></span>
     <button class="btn-icon" onclick="this.parentElement.remove()" style="flex-shrink:0;margin-left:.5rem">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
     </button>
   `;
+  // message is untrusted (may originate from an inbound email subject/sender
+  // via _pollNotifications) — set as text, never interpolated into innerHTML.
+  safeText(el.querySelector('.toast-msg'), message);
   _toastContainer.appendChild(el);
   setTimeout(() => { el.style.animation = 'none'; el.style.opacity = '0'; el.style.transition = 'opacity .2s'; setTimeout(() => el.remove(), 200); }, duration);
 }
@@ -513,9 +516,9 @@ function toastWithUndo(message, undoLabel, onUndo, ms) {
   var el = document.createElement('div');
   el.className = 'toast info';
   el.style.minWidth = '280px';
-  var undoBtn = '<button style="background:transparent;border:none;color:var(--primary);font-weight:700;cursor:pointer;margin-left:.75rem;padding:0">' + (undoLabel || 'Ongedaan') + '</button>';
+  var undoBtn = '<button style="background:transparent;border:none;color:var(--primary);font-weight:700;cursor:pointer;margin-left:.75rem;padding:0">' + escapeHtml(undoLabel || 'Ongedaan') + '</button>';
   el.innerHTML =
-    '<span style="flex:1">' + message + '</span>' +
+    '<span style="flex:1">' + escapeHtml(message) + '</span>' +
     undoBtn +
     '<button class="btn-icon" style="margin-left:.25rem" onclick="this.parentElement.remove()">' +
       '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +

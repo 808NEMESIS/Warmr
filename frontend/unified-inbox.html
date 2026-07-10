@@ -272,6 +272,7 @@
 </div>
 
 <div id="toast-container"></div>
+<script src="safe-dom.js"></script>
 <script src="config.js"></script>
 <script src="app.js"></script>
 <script>
@@ -359,7 +360,7 @@ function renderList() {
 
 function clsBadge(cls) {
   const label = CLS_LABEL[cls] || cls || '—';
-  return `<span class="cls-badge cls-${cls||'other'}">${label}</span>`;
+  return `<span class="cls-badge cls-${escapeHtml(cls||'other')}">${escapeHtml(label)}</span>`;
 }
 
 function renderReplyItem(r) {
@@ -375,15 +376,15 @@ function renderReplyItem(r) {
   return `
     <div class="reply-item${active}${unread}" onclick="openReply('${r.id}')">
       <div class="reply-item-top">
-        <div class="reply-sender">${name}</div>
+        <div class="reply-sender">${escapeHtml(name)}</div>
         <div class="reply-time">${timeAgo(r.received_at)}</div>
       </div>
-      ${company ? `<div class="reply-company">${company}</div>` : ''}
-      <div class="reply-subject">${r.subject||'(geen onderwerp)'}</div>
+      ${company ? `<div class="reply-company">${escapeHtml(company)}</div>` : ''}
+      <div class="reply-subject">${escapeHtml(r.subject||'(geen onderwerp)')}</div>
       <div class="reply-meta">
         ${dot}
         ${clsBadge(r.classification)}
-        <span class="text-xs text-muted" style="margin-left:auto">${campName}</span>
+        <span class="text-xs text-muted" style="margin-left:auto">${escapeHtml(campName)}</span>
       </div>
     </div>
   `;
@@ -427,12 +428,12 @@ function renderDetail(r) {
       <!-- Email panel -->
       <div class="detail-email-panel">
         <div class="detail-email-header">
-          <div class="detail-subject">${r.subject||'(geen onderwerp)'}</div>
+          <div class="detail-subject">${escapeHtml(r.subject||'(geen onderwerp)')}</div>
           <div class="detail-from-row">
-            <div class="detail-avatar">${initials}</div>
+            <div class="detail-avatar">${escapeHtml(initials)}</div>
             <div class="detail-from-info">
-              <div class="detail-from-name">${fullName}</div>
-              <div class="detail-from-email">${sender}</div>
+              <div class="detail-from-name">${escapeHtml(fullName)}</div>
+              <div class="detail-from-email">${escapeHtml(sender)}</div>
             </div>
             <div class="detail-time">${formatDateTime(r.received_at)}</div>
           </div>
@@ -443,7 +444,7 @@ function renderDetail(r) {
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
             Als geïnteresseerd markeren
           </button>
-          <button class="btn btn-danger btn-sm" onclick="stopSequence('${r.id}','${sender}')">
+          <button class="btn btn-danger btn-sm" onclick="stopSequence('${r.id}')">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
             Sequence stoppen
           </button>
@@ -473,15 +474,15 @@ function renderDetail(r) {
           <div class="sidebar-section-title">Lead info</div>
           <div class="sidebar-item">
             <div class="sidebar-item-label">Naam</div>
-            <div class="sidebar-item-value">${fullName}</div>
+            <div class="sidebar-item-value">${escapeHtml(fullName)}</div>
           </div>
           <div class="sidebar-item">
             <div class="sidebar-item-label">Bedrijf</div>
-            <div class="sidebar-item-value">${company}</div>
+            <div class="sidebar-item-value">${escapeHtml(company)}</div>
           </div>
           <div class="sidebar-item">
             <div class="sidebar-item-label">E-mail</div>
-            <div class="sidebar-item-value" style="font-size:.8rem;word-break:break-all">${sender}</div>
+            <div class="sidebar-item-value" style="font-size:.8rem;word-break:break-all">${escapeHtml(sender)}</div>
           </div>
         </div>
 
@@ -489,7 +490,7 @@ function renderDetail(r) {
           <div class="sidebar-section-title">Campagne context</div>
           <div class="sidebar-item">
             <div class="sidebar-item-label">Campagne</div>
-            <div class="sidebar-item-value">${campName}</div>
+            <div class="sidebar-item-value">${escapeHtml(campName)}</div>
           </div>
           <div class="sidebar-item">
             <div class="sidebar-item-label">Ontvangen</div>
@@ -512,9 +513,7 @@ function renderDetail(r) {
   `;
 }
 
-function escapeHtml(text) {
-  return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
+// escapeHtml is provided globally by safe-dom.js (loaded before this script).
 
 // ── Actions ───────────────────────────────────────────────────────────────────
 async function markInterested(id) {
@@ -528,7 +527,9 @@ async function markInterested(id) {
   } catch(e) { toast(e.message,'error'); }
 }
 
-async function stopSequence(id, email) {
+async function stopSequence(id) {
+  const rec = _replies.find(r => r.id === id);
+  const email = rec ? (rec.from_email || '') : '';
   if (!confirm(`Alle openstaande e-mails naar ${email} stoppen?`)) return;
   try {
     await api(`/replies/${id}`,{method:'PATCH',body:JSON.stringify({stop_sequence:true,lead_email:email,classification:'unsubscribe'})});

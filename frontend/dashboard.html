@@ -396,6 +396,7 @@
   });
 </script>
 
+<script src="safe-dom.js"></script>
 <script src="config.js"></script>
 <script src="app.js"></script>
 <script>
@@ -682,7 +683,7 @@
       <div class="notif-item">
         <div class="notif-dot ${dotCls}"></div>
         <div style="flex:1;min-width:0">
-          <div class="notif-msg">${n.message}</div>
+          <div class="notif-msg">${escapeHtml(n.message)}</div>
           <div class="notif-time">${timeAgo(n.timestamp)}</div>
         </div>
       </div>`;
