@@ -246,9 +246,20 @@ def load_due_campaign_leads(supabase: Client, campaign_id: str) -> list[dict]:
     return resp.data or []
 
 
-def is_email_hard_bounced(supabase: Client, lead_email: str, client_id: str | None = None) -> bool:
+def is_email_hard_bounced(
+    supabase: Client,
+    lead_email: str,
+    client_inbox_ids: list[str] | None = None,
+) -> bool:
     """
     True if this email address has a hard_bounce or spam_complaint logged.
+
+    bounce_log has no direct client_id column (only inbox_id), so tenant
+    scoping is done by restricting to the caller's own inbox_ids — otherwise
+    one tenant's bounce/complaint history suppresses another tenant's sends
+    to the same address (common in B2B: info@, sales@). client_inbox_ids
+    should be the caller's client_id's inbox ids, resolved once per campaign
+    run (see process_campaign) rather than re-fetched per lead.
 
     Sending again to a known-dead address burns reputation and is the kind
     of mistake spam filters latch onto fast. Best-effort check: any DB error
@@ -265,8 +276,8 @@ def is_email_hard_bounced(supabase: Client, lead_email: str, client_id: str | No
             .in_("bounce_type", ["hard", "spam_complaint"])
             .limit(1)
         )
-        # client_id on bounce_log is via inbox_id, not directly — best-effort filter
-        # if the column exists. Safe to skip for global hard bounces.
+        if client_inbox_ids:
+            q = q.in_("inbox_id", client_inbox_ids)
         resp = q.execute()
         return bool(resp.data)
     except Exception:
@@ -725,6 +736,7 @@ def process_lead(
     campaign_lead: dict,
     all_steps: list[dict],
     inbox_credentials: dict[str, str],
+    client_inbox_ids: list[str] | None = None,
 ) -> bool:
     """
     Process one due campaign_lead: select step, render content, send, log, advance.
@@ -897,7 +909,7 @@ def process_lead(
 
     # Hard-bounce blacklist — refuse to re-send to addresses that have
     # already returned a 5xx or filed a spam complaint. Reputation guard.
-    if is_email_hard_bounced(supabase, lead.get("email", ""), client_id):
+    if is_email_hard_bounced(supabase, lead.get("email", ""), client_inbox_ids):
         logger.info(
             "Lead %s previously hard-bounced or complained — skipping (campaign %s).",
             lead.get("email"), campaign.get("name"),
@@ -1096,6 +1108,17 @@ def process_campaign(
         logger.warning("Campaign '%s': no sequence steps configured — skipping.", campaign_name)
         return
 
+    # Resolve this client's own inbox ids once per run (not per lead) — used
+    # to tenant-scope is_email_hard_bounced against bounce_log, which has no
+    # direct client_id column.
+    client_inbox_ids: list[str] = [
+        row["id"]
+        for row in (
+            supabase.table("inboxes").select("id").eq("client_id", campaign.get("client_id")).execute().data
+            or []
+        )
+    ]
+
     # Load due leads
     due_leads = load_due_campaign_leads(supabase, campaign_id)
     if not due_leads:
@@ -1141,6 +1164,7 @@ def process_campaign(
                 campaign_lead=campaign_lead,
                 all_steps=all_steps,
                 inbox_credentials=inbox_credentials,
+                client_inbox_ids=client_inbox_ids,
             )
             if sent:
                 sends_this_run += 1

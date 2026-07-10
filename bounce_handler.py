@@ -268,10 +268,22 @@ def apply_reputation_delta(sb: Client, inbox_id: str, bounce_type: str) -> None:
         logger.error("Failed to apply reputation delta for inbox %s: %s", inbox_id, exc)
 
 
-def mark_lead_and_campaign_bounced(sb: Client, lead_email: str, bounce_type: str) -> None:
-    """When a lead hard-bounces or their mailbox unsubscribes, stop sending to them."""
+def mark_lead_and_campaign_bounced(sb: Client, lead_email: str, bounce_type: str, client_id: str) -> None:
+    """When a lead hard-bounces or their mailbox unsubscribes, stop sending to them.
+
+    Scoped to `client_id` — a bare email lookup would let a bounce received
+    on one tenant's inbox mark a DIFFERENT tenant's lead as bounced whenever
+    both target the same address (e.g. info@/sales@, common in B2B).
+    """
     try:
-        lead_resp = sb.table("leads").select("id, client_id").eq("email", lead_email).limit(1).execute()
+        lead_resp = (
+            sb.table("leads")
+            .select("id, client_id")
+            .eq("email", lead_email)
+            .eq("client_id", client_id)
+            .limit(1)
+            .execute()
+        )
         if not lead_resp.data:
             return
         lead_id = lead_resp.data[0]["id"]
@@ -429,7 +441,7 @@ def process_inbox(inbox: dict, password: str, sb: Client) -> int:
                 )
 
                 apply_reputation_delta(sb, inbox_id, bounce_type)
-                mark_lead_and_campaign_bounced(sb, recipient, bounce_type)
+                mark_lead_and_campaign_bounced(sb, recipient, bounce_type, inbox.get("client_id"))
 
                 # Also write an email_events row so analytics + circuit breakers see it
                 try:
