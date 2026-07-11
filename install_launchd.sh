@@ -122,6 +122,12 @@ make_plist "weekly-report" "weekly_report.py" 3600
 # 'active' after REAP_STRANDED_MINUTES (default 30) so they get retried.
 make_plist "reap-stranded-sends" "reap_stranded_sends.py" 600
 
+# Retention engine — run ONCE per day at 03:00 (StartCalendarInterval), NOT
+# on a short interval. This job hard-deletes closed accounts and purges aged
+# event data — a destructive job has no business running every few minutes
+# like reap-stranded-sends; it mirrors daily-reset's calendar reasoning.
+make_calendar_plist "retention-engine" "retention_engine.py" 3 0
+
 echo ""
 echo "Installed. To see status:"
 echo "  launchctl list | grep warmr"
