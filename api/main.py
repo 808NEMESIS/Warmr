@@ -4875,12 +4875,27 @@ async def compliance_overview(client_id: ClientId) -> dict:
         .execute()
     )
 
+    # This claim used to be aspirational, not real — no automated job enforced
+    # it. retention_engine.py (Fase 2 Track 2) now exists but only becomes the
+    # honest truth once the operator has confirmed it runs successfully in
+    # production and set WARMR_RETENTION_ENABLED=1. Until then, say so.
+    if os.getenv("WARMR_RETENTION_ENABLED", "0") == "1":
+        retention_policy = (
+            "Leads + events retained while account is active. Automatically deleted on "
+            "request (Article 17) or within 30 days of account closure via a scheduled job."
+        )
+    else:
+        retention_policy = (
+            "Leads + events retained while account is active. Deleted on request (Article 17). "
+            "Automatic deletion after account closure is not yet enabled — contact support for manual erasure."
+        )
+
     return {
         "client_id": client_id,
         "data_held_by_warmr": counts,
         "total_rows": sum(counts.values()),
         "admin_actions_last_30d": admin_acts.data or [],
-        "retention_policy": "Leads + events retained while account is active. Deleted on request (Article 17) or within 30 days of account closure.",
+        "retention_policy": retention_policy,
         "rights": {
             "access": "/leads/{lead_id}/export-gdpr  (HMAC-signed bundle per lead)",
             "erasure": "/leads/{lead_id}/purge  (permanent delete, irreversible)",

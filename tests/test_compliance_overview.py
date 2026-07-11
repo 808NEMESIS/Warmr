@@ -116,8 +116,30 @@ def test_compliance_overview_client_with_no_leads_reports_zero(monkeypatch):
     monkeypatch.setattr(api_main, "_supabase", sb)
 
     result = asyncio.run(api_main.compliance_overview("client-nobody"))
-
     assert result["data_held_by_warmr"]["email_events"] == 0
+
+
+def test_compliance_overview_retention_claim_is_honest_by_default(monkeypatch):
+    """Without WARMR_RETENTION_ENABLED=1, the response must NOT claim
+    automatic post-closure deletion — no such job was confirmed running
+    when this test was written."""
+    sb = FakeSupabase({"leads": [], "email_events": [], "admin_audit_log": []})
+    monkeypatch.setattr(api_main, "_supabase", sb)
+    monkeypatch.delenv("WARMR_RETENTION_ENABLED", raising=False)
+
+    result = asyncio.run(api_main.compliance_overview("client-nobody"))
+
+    assert "not yet enabled" in result["retention_policy"]
+
+
+def test_compliance_overview_retention_claim_becomes_honest_once_enabled(monkeypatch):
+    sb = FakeSupabase({"leads": [], "email_events": [], "admin_audit_log": []})
+    monkeypatch.setattr(api_main, "_supabase", sb)
+    monkeypatch.setenv("WARMR_RETENTION_ENABLED", "1")
+
+    result = asyncio.run(api_main.compliance_overview("client-nobody"))
+
+    assert "Automatically deleted" in result["retention_policy"]
 
 
 if __name__ == "__main__":
