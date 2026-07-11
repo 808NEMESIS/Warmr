@@ -16,10 +16,14 @@ class FakeTable:
         self.data = data or []
         self.insert_calls = []
         self._pending_insert = None
+        self._or_filter = None
 
     def select(self, *a, **k): return self
     def eq(self, *a, **k): return self
     def limit(self, n): return self
+    def or_(self, expr):
+        self._or_filter = expr
+        return self
     def insert(self, payload):
         self.insert_calls.append(payload)
         self._pending_insert = payload
@@ -29,6 +33,15 @@ class FakeTable:
             p = self._pending_insert
             self._pending_insert = None
             return _Exec([p])
+        if self._or_filter is not None:
+            # Emulate postgrest's or_("email.eq.x,domain.eq.y") against
+            # this table's rows — matches the real suppression_list shape.
+            clauses = [c.split(".", 2) for c in self._or_filter.split(",")]
+            matched = [
+                row for row in self.data
+                if any(op == "eq" and row.get(col) == val for col, op, val in clauses)
+            ]
+            return _Exec(matched)
         return _Exec(self.data)
 
 
@@ -53,7 +66,7 @@ class FakeSupabase:
 # ── is_suppressed ──────────────────────────────────────────────────────────
 
 def test_is_suppressed_returns_true_when_listed():
-    sb = FakeSupabase(suppressed=[{"id": "s1"}])
+    sb = FakeSupabase(suppressed=[{"id": "s1", "email": "alice@example.com", "domain": "example.com"}])
     assert cs.is_suppressed(sb, "client-1", "alice@example.com") is True
 
 
@@ -64,8 +77,20 @@ def test_is_suppressed_returns_false_when_not_listed():
 
 def test_is_suppressed_normalizes_case_and_whitespace():
     # The check lowercases + strips the input
-    sb = FakeSupabase(suppressed=[{"id": "s1"}])
+    sb = FakeSupabase(suppressed=[{"id": "s1", "email": "alice@example.com", "domain": "example.com"}])
     assert cs.is_suppressed(sb, "client-1", "  Alice@EXAMPLE.com  ") is True
+
+
+def test_is_suppressed_matches_by_domain():
+    """A whole-domain suppression entry (email=None, domain set) blocks any
+    address at that domain, not just an exact email match."""
+    sb = FakeSupabase(suppressed=[{"id": "s1", "email": None, "domain": "blocked.example"}])
+    assert cs.is_suppressed(sb, "client-1", "anyone@blocked.example") is True
+
+
+def test_is_suppressed_domain_match_does_not_leak_other_domains():
+    sb = FakeSupabase(suppressed=[{"id": "s1", "email": None, "domain": "blocked.example"}])
+    assert cs.is_suppressed(sb, "client-1", "someone@other.example") is False
 
 
 # ── Unsubscribe link generation ────────────────────────────────────────────

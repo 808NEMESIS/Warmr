@@ -107,15 +107,21 @@ def load_client_settings(supabase: Client, client_id: str) -> dict:
 
 
 def is_suppressed(supabase: Client, client_id: str, email: str) -> bool:
-    """Check if an email address is on the client's suppression list."""
-    resp = (
+    """Check if an email address, or its domain, is on the client's
+    suppression list. Domain suppression lets an operator block an entire
+    company (e.g. after a complaint) without enumerating every address."""
+    email = email.lower().strip()
+    domain = email.split("@")[-1] if "@" in email else None
+    query = (
         supabase.table("suppression_list")
         .select("id")
         .eq("client_id", client_id)
-        .eq("email", email.lower().strip())
-        .limit(1)
-        .execute()
     )
+    if domain:
+        query = query.or_(f"email.eq.{email},domain.eq.{domain}")
+    else:
+        query = query.eq("email", email)
+    resp = query.limit(1).execute()
     return bool(resp.data)
 
 

@@ -775,6 +775,16 @@ def scan_client_inbox_for_prospect_replies(
                 except Exception as exc:
                     logger.debug("leads status update failed: %s", exc)
 
+                # Reply-based unsubscribe: suppress + cancel pending sends
+                # (same GDPR-critical path as the link-click flow — a prospect
+                # replying "STOP" must stop receiving scheduled campaign emails).
+                if signals.get("category") == "unsubscribe":
+                    try:
+                        from utils.suppression import suppress_and_cancel
+                        suppress_and_cancel(supabase, client_id, lead["id"], sender, source="reply")
+                    except Exception as exc:
+                        logger.debug("suppress_and_cancel failed for %s: %s", sender, exc)
+
                 logger.info(
                     "Stored prospect reply from %s → inbox %s (cat=%s, meeting=%s, urgency=%s).",
                     sender, inbox_email, signals.get("category"),

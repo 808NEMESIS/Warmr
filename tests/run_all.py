@@ -68,6 +68,10 @@ TEST_MODULES = [
     "test_cost_control",
     "test_reaper",
     "test_bounce_tenant_isolation",
+    "test_suppression_helper",
+    "test_client_deletion",
+    "test_gdpr_purge",
+    "test_compliance_overview",
 ]
 
 

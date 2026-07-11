@@ -3564,18 +3564,11 @@ async def admin_delete_client(client_id: str, admin_id: AdminId) -> dict:
     if client_id == admin_id:
         raise HTTPException(status_code=400, detail="Cannot delete your own account via admin.")
 
-    # Delete in dependency order
-    for table in ["warmup_logs", "sending_schedule", "bounce_log", "inboxes", "domains", "campaigns", "clients"]:
-        try:
-            if table in ("warmup_logs", "bounce_log", "sending_schedule"):
-                # These reference inboxes/campaigns, not client_id directly on all rows
-                _supabase.table(table).delete().eq("client_id", client_id).execute()
-            else:
-                _supabase.table(table).delete().eq("client_id" if table != "clients" else "id", client_id).execute()
-        except Exception:
-            pass  # Table may not exist yet (campaigns etc)
+    from utils.client_deletion import hard_delete_client
+    deleted = hard_delete_client(_supabase, client_id)
+    _log_admin_action(admin_id, "hard_delete_client", "client", client_id, {"deleted": deleted})
 
-    return {"ok": True, "deleted_client_id": client_id}
+    return {"ok": True, "deleted_client_id": client_id, "deleted": deleted}
 
 
 @app.get("/admin/stats", tags=["Admin"])
@@ -4839,12 +4832,31 @@ async def compliance_overview(client_id: ClientId) -> dict:
         except Exception:
             return 0
 
+    def _count_email_events() -> int:
+        # email_events has no client_id column — scope through this client's
+        # own lead_ids instead. A bare .eq("client_id", ...) always raised
+        # here and was silently caught, so this always reported 0.
+        try:
+            lead_ids = [
+                row["id"]
+                for row in (
+                    _supabase.table("leads").select("id").eq("client_id", client_id).execute().data
+                    or []
+                )
+            ]
+            if not lead_ids:
+                return 0
+            r = _supabase.table("email_events").select("id", count="exact").in_("lead_id", lead_ids).execute()
+            return r.count or 0
+        except Exception:
+            return 0
+
     counts = {
         "leads": _count("leads"),
         "inboxes": _count("inboxes"),
         "domains": _count("domains"),
         "campaigns": _count("campaigns"),
-        "email_events": _count("email_events"),
+        "email_events": _count_email_events(),
         "email_tracking": _count("email_tracking"),
         "suppression_list": _count("suppression_list"),
         "notifications": _count("notifications"),
@@ -4925,11 +4937,32 @@ async def gdpr_export_lead(lead_id: str, client_id: ClientId) -> dict:
 def _purge_lead_by_id(lead_id: str, email: str, client_id: str) -> dict:
     """Shared GDPR Article 17 erasure. Returns per-table delete counts."""
     deleted: dict = {}
+
+    # bounce_log has no client_id column (only inbox_id) — filtering on
+    # lead_email alone would purge rows for every tenant sharing that
+    # address (e.g. info@/sales@ mailboxes), the same cross-tenant bug class
+    # already fixed for is_email_hard_bounced. Resolve this tenant's own
+    # inbox_ids first and scope the delete through inbox_id instead.
+    client_inbox_ids = [
+        row["id"]
+        for row in (
+            _supabase.table("inboxes").select("id").eq("client_id", client_id).execute().data
+            or []
+        )
+    ]
+    try:
+        q = _supabase.table("bounce_log").delete().eq("lead_email", email)
+        q = q.in_("inbox_id", client_inbox_ids) if client_inbox_ids else q.eq("inbox_id", "__none__")
+        r = q.execute()
+        deleted["bounce_log"] = len(r.data or [])
+    except Exception as exc:
+        deleted["bounce_log"] = f"error: {exc}"
+
     for table, filter_col, filter_val in [
         ("email_tracking",      "lead_id",    lead_id),
         ("email_events",        "lead_id",    lead_id),
         ("campaign_leads",      "lead_id",    lead_id),
-        ("bounce_log",          "lead_email", email),
+        ("crm_sync_log",        "lead_id",    lead_id),
         ("unsubscribe_tokens",  "lead_id",    lead_id),
         ("reply_inbox",         "lead_id",    lead_id),
         ("enrichment_queue",    "lead_id",    lead_id),
@@ -4937,12 +4970,12 @@ def _purge_lead_by_id(lead_id: str, email: str, client_id: str) -> dict:
         ("leads",               "id",         lead_id),
     ]:
         try:
-            # client_id filter is enforced for every multi-tenant table to
-            # prevent cross-tenant erasure via a guessed lead_id.
             q = _supabase.table(table).delete().eq(filter_col, filter_val)
-            if table not in ("leads",):  # leads's row is identified by id only
-                q = q.eq("client_id", client_id)
-            else:
+            # client_id filter is enforced for every multi-tenant table to
+            # prevent cross-tenant erasure via a guessed lead_id. email_events
+            # has no client_id column — lead_id ownership is already verified
+            # by the caller before this function runs.
+            if table != "email_events":
                 q = q.eq("client_id", client_id)
             r = q.execute()
             deleted[table] = len(r.data or [])
@@ -6009,32 +6042,14 @@ async def process_unsubscribe(token: str) -> Response:
     # Mark token as used
     _supabase.table("unsubscribe_tokens").update({"used": True}).eq("id", row["id"]).execute()
 
-    # Add to suppression list
-    try:
-        domain = row["lead_email"].split("@")[-1] if "@" in row["lead_email"] else None
-        _supabase.table("suppression_list").insert({
-            "client_id": row["client_id"],
-            "email": row["lead_email"],
-            "domain": domain,
-            "reason": "unsubscribe",
-            "source": row.get("campaign_id") or "email",
-        }).execute()
-    except Exception:
-        pass  # Already suppressed
-
-    # Cancel all pending sends for this lead across all campaigns
-    try:
-        _supabase.table("campaign_leads").update({
-            "status": "unsubscribed",
-        }).eq("lead_id", row["lead_id"]).in_("status", ["active", "pending"]).execute()
-    except Exception:
-        pass
-
-    # Update lead status
-    try:
-        _supabase.table("leads").update({"status": "unsubscribed"}).eq("id", row["lead_id"]).execute()
-    except Exception:
-        pass
+    from utils.suppression import suppress_and_cancel
+    suppress_and_cancel(
+        _supabase,
+        row["client_id"],
+        row["lead_id"],
+        row["lead_email"],
+        source=row.get("campaign_id") or "email",
+    )
 
     html = _unsub_html(
         "Uitgeschreven",
