@@ -6139,7 +6139,6 @@ async def track_open(token: str, request: Request) -> Response:
             }).execute()
             try:
                 _supabase.table("email_events").insert({
-                    "client_id": client_id,
                     "campaign_id": campaign_id,
                     "lead_id": lead_id,
                     "event_type": "opened",
@@ -6163,54 +6162,66 @@ async def track_open(token: str, request: Request) -> Response:
 
 @app.get("/c/{token}", tags=["Tracking"], include_in_schema=False)
 async def track_click(token: str, url: str = Query(...), request: Request = None) -> Response:
-    """Record a click event and redirect to the original URL."""
+    """Record a click event and redirect to the original URL.
+
+    An invalid/expired token must NOT redirect. Previously an invalid token
+    simply skipped the `if verified:` block and fell through to the final,
+    unconditional RedirectResponse — turning this endpoint into an open
+    redirect (`/c/anything?url=https://phishing.example` redirected without
+    ever validating the token).
+    """
+    verified = _verify_tracking_token(token)
+    if not verified:
+        raise HTTPException(status_code=404, detail="Invalid or expired tracking link.")
+
+    from urllib.parse import urlparse
+    if urlparse(url).scheme.lower() not in ("http", "https"):
+        raise HTTPException(status_code=404, detail="Invalid redirect URL.")
+
     try:
-        verified = _verify_tracking_token(token)
-        if verified:
-            client_id, campaign_id, lead_id, lead_email = verified
-            # Suspended clients: do not track, but still redirect (user gets what they clicked)
-            if _client_is_suspended(client_id):
-                return RedirectResponse(url=url, status_code=302)
-            _supabase.table("email_tracking").insert({
-                "client_id": client_id,
+        client_id, campaign_id, lead_id, lead_email = verified
+        # Suspended clients: do not track, but still redirect (user gets what they clicked)
+        if _client_is_suspended(client_id):
+            return RedirectResponse(url=url, status_code=302)
+        _supabase.table("email_tracking").insert({
+            "client_id": client_id,
+            "campaign_id": campaign_id,
+            "lead_id": lead_id,
+            "lead_email": lead_email,
+            "event_type": "click",
+            "tracking_token": token,
+            "link_url": url,
+            "ip_address": request.client.host if request.client else None,
+            "user_agent": request.headers.get("user-agent", ""),
+        }).execute()
+        try:
+            _supabase.table("email_events").insert({
                 "campaign_id": campaign_id,
                 "lead_id": lead_id,
-                "lead_email": lead_email,
-                "event_type": "click",
-                "tracking_token": token,
-                "link_url": url,
-                "ip_address": request.client.host if request.client else None,
-                "user_agent": request.headers.get("user-agent", ""),
+                "event_type": "clicked",
             }).execute()
-            try:
-                _supabase.table("email_events").insert({
-                    "client_id": client_id,
-                    "campaign_id": campaign_id,
-                    "lead_id": lead_id,
-                    "event_type": "clicked",
-                }).execute()
-            except Exception:
-                logger.debug("Failed to write email_events for click tracking: %s", token[:20])
-            # Engagement score: +10 for click
-            try:
-                from engagement_scorer import add_engagement
-                add_engagement(_supabase, lead_id, "clicked")
-            except Exception:
-                pass
-            # Hot-signal notification + lead.clicked webhook event.
-            # Throttled per-lead so spam-clicks don't flood the operator.
-            try:
-                from utils.notifier import notify_lead_clicked
-                notify_lead_clicked(
-                    _supabase,
-                    client_id=client_id,
-                    lead_id=lead_id,
-                    lead_email=lead_email,
-                    campaign_id=campaign_id,
-                    clicked_url=url,
-                )
-            except Exception as exc:
-                logger.debug("notify_lead_clicked failed for %s: %s", token[:20], exc)
+        except Exception:
+            logger.debug("Failed to write email_events for click tracking: %s", token[:20])
+        # Engagement score: +10 for click
+        try:
+            from engagement_scorer import add_engagement
+            add_engagement(_supabase, lead_id, "clicked")
+        except Exception:
+            pass
+        # Hot-signal notification + lead.clicked webhook event.
+        # Throttled per-lead so spam-clicks don't flood the operator.
+        try:
+            from utils.notifier import notify_lead_clicked
+            notify_lead_clicked(
+                _supabase,
+                client_id=client_id,
+                lead_id=lead_id,
+                lead_email=lead_email,
+                campaign_id=campaign_id,
+                clicked_url=url,
+            )
+        except Exception as exc:
+            logger.debug("notify_lead_clicked failed for %s: %s", token[:20], exc)
     except Exception as exc:
         logger.debug("Click tracking error for token %s: %s", token[:20], exc)
     return RedirectResponse(url=url, status_code=302)
