@@ -48,27 +48,49 @@ class _Query:
         return self
 
     def eq(self, col, val):
-        assert col == "id", f"stub only supports .eq('id', ...) — got {col!r}"
-        self._filter_id = val
+        # W1-2: het venster-criterium query't inbox_status_log/warmup_logs
+        # met andere kolommen — de stub filtert nu generiek.
+        self._filters = getattr(self, "_filters", [])
+        self._filters.append(("eq", col, val))
+        if col == "id":
+            self._filter_id = val
+        return self
+
+    def gte(self, col, val):
+        self._filters = getattr(self, "_filters", [])
+        self._filters.append(("gte", col, val))
+        return self
+
+    def insert(self, payload):
+        self._op = "insert"
+        self._payload = payload
         return self
 
     def limit(self, _n):
         return self
 
+    def _match(self, row):
+        for kind, col, val in getattr(self, "_filters", []):
+            if kind == "eq" and row.get(col) != val:
+                return False
+            if kind == "gte" and not (str(row.get(col) or "") >= str(val)):
+                return False
+        return True
+
     def execute(self):
-        rows = self._store[self._table]
+        rows = self._store.setdefault(self._table, [])
         if self._op == "select":
-            if self._filter_id is not None:
-                hit = [r for r in rows if r.get("id") == self._filter_id]
-                return _Resp(hit)
-            return _Resp(list(rows))
+            return _Resp([r for r in rows if self._match(r)])
         if self._op == "update":
             updated = []
             for r in rows:
-                if self._filter_id is None or r.get("id") == self._filter_id:
+                if self._match(r):
                     r.update(self._payload)
                     updated.append(r)
             return _Resp(updated)
+        if self._op == "insert":
+            rows.append(dict(self._payload))
+            return _Resp([self._payload])
         return _Resp([])
 
 
@@ -183,3 +205,46 @@ def test_already_ready_inbox_no_change():
     assert result["new_status"] is None
     # No status flip — still 'ready'
     assert sb.store["inboxes"][0]["status"] == "ready"
+
+
+# ── W1-2: 7-dagen-pauzevenster i.p.v. de nooit-gerestte teller ──────────────
+
+
+def test_recent_pause_blocks_promotion():
+    """Een pauze binnen 7 dagen blokkeert; de oude kolom is irrelevant."""
+    sb = FakeSupabase()
+    now = datetime.now(timezone.utc)
+    sb.store["inboxes"] = [_make_inbox()]
+    sb.store["inbox_status_log"] = [{
+        "inbox_id": "inbox-1", "to_status": "paused",
+        "created_at": (now - timedelta(days=2)).isoformat(),
+    }]
+    result = check_and_promote_inbox("inbox-1", sb)
+    assert result["promoted"] is False
+    assert result["reason"] == "recent_auto_pauses"
+    assert result["criteria_status"]["recent_pauses_7d"] == 1
+
+
+def test_old_pause_outside_window_promotes():
+    """DE fuik-regressietest: pauzes ouder dan 7 dagen (zoals 26-27 mei)
+    blokkeren promotie NIET meer — ook al staat de legacy-teller op 3."""
+    sb = FakeSupabase()
+    now = datetime.now(timezone.utc)
+    sb.store["inboxes"] = [_make_inbox(auto_pause_count_24h=3)]  # legacy-teller genegeerd
+    sb.store["inbox_status_log"] = [{
+        "inbox_id": "inbox-1", "to_status": "paused",
+        "created_at": (now - timedelta(days=45)).isoformat(),
+    }]
+    result = check_and_promote_inbox("inbox-1", sb)
+    assert result["promoted"] is True, result
+    assert sb.store["inboxes"][0]["status"] == "ready"
+
+
+def test_promotion_writes_status_log():
+    sb = FakeSupabase()
+    sb.store["inboxes"] = [_make_inbox()]
+    result = check_and_promote_inbox("inbox-1", sb)
+    assert result["promoted"] is True
+    transitions = sb.store.get("inbox_status_log", [])
+    assert any(t.get("to_status") == "ready" and t.get("reason") == "promotion"
+               for t in transitions)

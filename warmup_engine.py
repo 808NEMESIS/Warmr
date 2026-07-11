@@ -668,7 +668,11 @@ def process_inbox(
         log_action(
             supabase,
             inbox_id=inbox_id,
-            action="error",
+            # W1 ROOT-CAUSE-FIX (fuik 26-27 mei): dit is een CONTENT-fout
+            # (Claude 529), geen SMTP-fout. Onder action="error" telde
+            # diagnostics.check_smtp_errors hem mee als SMTP-error en
+            # pauzeerde gezonde inboxen. Eigen label = niet meegeteld.
+            action="generation_error",
             reputation_score=reputation_score,
             warmup_week=week,
             daily_volume=daily_sent,

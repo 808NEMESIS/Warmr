@@ -9,7 +9,8 @@ Promotion criteria (ALL must be true):
   - days_in_warmup >= 28  (>=4 weeks since warmup_start_date)
   - reputation_score >= 70
   - last_spam_incident IS NULL  OR  last_spam_incident < NOW() - 14 days
-  - auto_pause_count_24h = 0
+  - geen auto-pauzes in de laatste 7 dagen (inbox_status_log-venster;
+    verving de kolom auto_pause_count_24h die nooit gereset werd — W1-2)
   - daily_warmup_target >= 50  (full volume reached)
 
 On promotion: status flips from 'warmup' to 'ready'. warmup_active stays True
@@ -20,8 +21,13 @@ decides what to do with the outcome.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
+
+from utils.status_log import log_status_transition
+
+logger = logging.getLogger(__name__)
 
 
 _PROMOTION_DAYS_REQUIRED = 28
@@ -44,7 +50,47 @@ def _parse_ts(value: Any) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def _evaluate_criteria(inbox: dict, now: datetime) -> dict:
+_PAUSE_WINDOW_DAYS = 7
+
+
+def _recent_pause_count(supabase, inbox_id: str, now: datetime) -> int:
+    """Pauzes in de laatste 7 dagen — venster op timestamps, geen teller.
+
+    W1-2 (mailbox health plan): het oude criterium las auto_pause_count_24h,
+    een kolom die alleen opgehoogd en NOOIT gepersisteerd gereset werd —
+    één auto-pauze ooit betekende levenslang geen promotie. Nu tellen we
+    échte pauze-events in een écht venster.
+
+    Primaire bron: inbox_status_log (migratie 2026-07-11). Fallback:
+    warmup_logs action='auto_paused' (historische data, en dekking zolang
+    de migratie nog niet gedraaid is). FAIL-CLOSED: kunnen we de historie
+    niet lezen, dan promoot je niet — ready is een privilege.
+    """
+    since = (now - timedelta(days=_PAUSE_WINDOW_DAYS)).isoformat()
+    try:
+        res = (
+            supabase.table("inbox_status_log").select("id")
+            .eq("inbox_id", inbox_id).eq("to_status", "paused")
+            .gte("created_at", since).execute()
+        )
+        return len(res.data or [])
+    except Exception:
+        try:
+            res = (
+                supabase.table("warmup_logs").select("id")
+                .eq("inbox_id", inbox_id).eq("action", "auto_paused")
+                .gte("timestamp", since).execute()
+            )
+            return len(res.data or [])
+        except Exception as exc:
+            logger.error(
+                "auto_promote: pauze-historie onleesbaar voor inbox %s: %s — "
+                "FAIL-CLOSED (geen promotie).", inbox_id, exc,
+            )
+            return 999
+
+
+def _evaluate_criteria(inbox: dict, now: datetime, recent_pauses: int) -> dict:
     """Compute the criteria_status dict per briefing spec."""
     warmup_active = bool(inbox.get("warmup_active"))
 
@@ -59,7 +105,8 @@ def _evaluate_criteria(inbox: dict, now: datetime) -> dict:
         or spam_incident < now - timedelta(days=_SPAM_INCIDENT_CLEAR_DAYS)
     )
 
-    no_auto_pauses = int(inbox.get("auto_pause_count_24h") or 0) == 0
+    # W1-2: venster i.p.v. de nooit-gerestte teller
+    no_auto_pauses = recent_pauses == 0
 
     target_reached = int(inbox.get("daily_warmup_target") or 0) >= _MIN_TARGET
 
@@ -69,6 +116,7 @@ def _evaluate_criteria(inbox: dict, now: datetime) -> dict:
         "reputation_score": reputation_score,
         "spam_clear": spam_clear,
         "no_auto_pauses": no_auto_pauses,
+        "recent_pauses_7d": recent_pauses,
         "target_reached": target_reached,
     }
 
@@ -123,6 +171,7 @@ def check_and_promote_inbox(inbox_id: str, supabase) -> dict:
 
     inbox = rows[0]
     previous_status = inbox.get("status")
+    now = datetime.now(timezone.utc)
 
     # Idempotency: already-ready inboxes return immediately, no re-evaluation.
     if previous_status == "ready":
@@ -130,13 +179,14 @@ def check_and_promote_inbox(inbox_id: str, supabase) -> dict:
             "inbox_id": inbox_id,
             "promoted": False,
             "reason": "already_ready",
-            "criteria_status": _evaluate_criteria(inbox, datetime.now(timezone.utc)),
+            "criteria_status": _evaluate_criteria(
+                inbox, now, _recent_pause_count(supabase, inbox_id, now)),
             "previous_status": "ready",
             "new_status": None,
         }
 
-    now = datetime.now(timezone.utc)
-    criteria = _evaluate_criteria(inbox, now)
+    criteria = _evaluate_criteria(
+        inbox, now, _recent_pause_count(supabase, inbox_id, now))
     reason = _decline_reason(criteria)
 
     if reason != "promoted":
@@ -156,6 +206,11 @@ def check_and_promote_inbox(inbox_id: str, supabase) -> dict:
         # warmup_active stays True — Warmr keeps reputation-maintenance traffic.
         "updated_at": now.isoformat(),
     }).eq("id", inbox_id).execute()
+    log_status_transition(
+        supabase, inbox_id=inbox_id, from_status=previous_status,
+        to_status=new_status, reason="promotion", source="auto_promote",
+        detail=criteria,
+    )
 
     return {
         "inbox_id": inbox_id,

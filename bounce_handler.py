@@ -268,12 +268,15 @@ def apply_reputation_delta(sb: Client, inbox_id: str, bounce_type: str) -> None:
         logger.error("Failed to apply reputation delta for inbox %s: %s", inbox_id, exc)
 
 
-def mark_lead_and_campaign_bounced(sb: Client, lead_email: str, bounce_type: str, client_id: str) -> None:
+def mark_lead_and_campaign_bounced(sb: Client, lead_email: str, bounce_type: str, client_id: str) -> Optional[str]:
     """When a lead hard-bounces or their mailbox unsubscribes, stop sending to them.
 
     Scoped to `client_id` — a bare email lookup would let a bounce received
     on one tenant's inbox mark a DIFFERENT tenant's lead as bounced whenever
     both target the same address (e.g. info@/sales@, common in B2B).
+
+    Returns the matched lead_id (or None), so callers can log an email_events
+    row without a second lookup — email_events has no lead_email column.
     """
     try:
         lead_resp = (
@@ -285,7 +288,7 @@ def mark_lead_and_campaign_bounced(sb: Client, lead_email: str, bounce_type: str
             .execute()
         )
         if not lead_resp.data:
-            return
+            return None
         lead_id = lead_resp.data[0]["id"]
 
         # Update lead.status
@@ -297,8 +300,10 @@ def mark_lead_and_campaign_bounced(sb: Client, lead_email: str, bounce_type: str
             sb.table("campaign_leads").update({
                 "status": "bounced",
             }).eq("lead_id", lead_id).in_("status", ["active", "pending"]).execute()
+        return lead_id
     except Exception as exc:
         logger.error("Failed to mark lead %s as %s: %s", lead_email, bounce_type, exc)
+        return None
 
 
 def check_inbox_bounce_rate(sb: Client, inbox_id: str) -> None:
@@ -338,6 +343,13 @@ def check_inbox_bounce_rate(sb: Client, inbox_id: str) -> None:
                 "warmup_active": False,
                 "notes": f"Auto-paused {datetime.now(timezone.utc).date().isoformat()}: bounce rate {rate:.1%} > {BOUNCE_RATE_THRESHOLD:.0%}",
             }).eq("id", inbox_id).execute()
+            from utils.status_log import log_status_transition
+            log_status_transition(
+                sb, inbox_id=inbox_id, from_status=status, to_status="paused",
+                reason="bounce_rate", source="bounce_handler",
+                detail={"rate": round(rate, 4), "threshold": BOUNCE_RATE_THRESHOLD,
+                        "sent_7d": sent_count, "bounced_7d": bounce_count},
+            )
             try:
                 sb.table("notifications").insert({
                     "client_id": client_id,
@@ -441,19 +453,22 @@ def process_inbox(inbox: dict, password: str, sb: Client) -> int:
                 )
 
                 apply_reputation_delta(sb, inbox_id, bounce_type)
-                mark_lead_and_campaign_bounced(sb, recipient, bounce_type, inbox.get("client_id"))
+                bounced_lead_id = mark_lead_and_campaign_bounced(sb, recipient, bounce_type, inbox.get("client_id"))
 
-                # Also write an email_events row so analytics + circuit breakers see it
-                try:
-                    sb.table("email_events").insert({
-                        "inbox_id": inbox_id,
-                        "client_id": inbox.get("client_id"),
-                        "lead_email": recipient,
-                        "event_type": "bounced",
-                        "created_at": _now(),
-                    }).execute()
-                except Exception:
-                    pass
+                # Also write an email_events row so analytics + circuit breakers see it.
+                # Previously this used columns (client_id, lead_email, created_at) that
+                # don't exist on email_events, so the insert always raised and was
+                # swallowed here — IMAP-detected bounces never reached email_events,
+                # leaving calculate_bounce_rate's circuit breaker blind to them.
+                if bounced_lead_id:
+                    try:
+                        sb.table("email_events").insert({
+                            "inbox_id": inbox_id,
+                            "lead_id": bounced_lead_id,
+                            "event_type": "bounced",
+                        }).execute()
+                    except Exception:
+                        pass
 
                 # Mark the bounce message as read so we don't reprocess
                 try:

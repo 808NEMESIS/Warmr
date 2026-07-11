@@ -67,6 +67,9 @@ IMAP_TIMEOUT:           int   = 10     # seconds per IMAP login attempt
 # Reputation drift thresholds
 DRIFT_MIN_DAYS:       int   = 3       # consecutive days of decline needed
 DRIFT_MIN_POINTS:     float = 3.0     # total drop across those days
+from utils.status_log import log_status_transition
+from utils.timeparse import parse_ts_utc
+
 CRITICAL_REP_THRESHOLD: float = 35.0   # auto-pause inbox if reputation drops below this
 
 # SMTP error thresholds
@@ -257,6 +260,12 @@ def check_reputation_drift(sb: Client, client_id: str) -> None:
                     "warmup_active": False,
                     "notes": f"Auto-paused {datetime.now(timezone.utc).date().isoformat()}: reputation {current_score:.1f} below critical threshold {CRITICAL_REP_THRESHOLD}",
                 }).eq("id", inbox_id).execute()
+                log_status_transition(
+                    sb, inbox_id=inbox_id, from_status=current_status, to_status="paused",
+                    reason="critical_reputation", source="diagnostics",
+                    detail={"reputation_score": current_score,
+                            "threshold": CRITICAL_REP_THRESHOLD},
+                )
 
                 _create_notification(
                     sb, client_id,
@@ -561,11 +570,20 @@ def check_smtp_errors(sb: Client, client_id: str) -> None:
         reset_at_str = inbox.get("auto_pause_reset_at")
         if inbox.get("status") == "paused" and reset_at_str:
             try:
-                reset_at = datetime.fromisoformat(reset_at_str.replace("Z", "+00:00"))
-                if now_utc >= reset_at:
+                # W1-1 TZ-BUG-FIX: Supabase geeft timestamps ZONDER offset terug;
+                # de oude fromisoformat+replace("Z") produceerde een naive
+                # datetime en de aware-vergelijking crashte — zes weken lang,
+                # elke cyclus, alleen zichtbaar als weggegooide warning. Zie
+                # utils/timeparse.parse_ts_utc.
+                reset_at = parse_ts_utc(reset_at_str)
+                if reset_at and now_utc >= reset_at:
                     sb.table("inboxes").update({
                         "status":             "warmup",
                         "auto_pause_reset_at": None,
+                        # W1-2: de teller werd nooit gepersisteerd gereset
+                        # (de "reset" verderop was een lokale variabele) —
+                        # waardoor promotie (eist ==0) voor eeuwig blokkeerde.
+                        "auto_pause_count_24h": 0,
                     }).eq("id", iid).execute()
                     # Log resumption
                     sb.table("warmup_logs").insert({
@@ -574,9 +592,14 @@ def check_smtp_errors(sb: Client, client_id: str) -> None:
                         "notes":    "Auto-pause window expired. Inbox resumed automatically.",
                         "timestamp": _now_utc(),
                     }).execute()
+                    log_status_transition(
+                        sb, inbox_id=iid, from_status="paused", to_status="warmup",
+                        reason="auto_resume", source="diagnostics",
+                        detail={"reset_at": reset_at_str},
+                    )
                     logger.info("Auto-resumed inbox %s", inbox.get("email"))
             except Exception as exc:
-                logger.warning("Failed to auto-resume inbox %s: %s", iid, exc)
+                logger.error("Failed to auto-resume inbox %s: %s", iid, exc)
 
     # Count errors per inbox within the window
     errors_by_inbox: dict[str, int] = defaultdict(int)
@@ -596,12 +619,9 @@ def check_smtp_errors(sb: Client, client_id: str) -> None:
         # Reset 24h counter if needed
         reset_str = inbox.get("auto_pause_reset_at")
         if cur_pauses > 0 and reset_str:
-            try:
-                reset_dt = datetime.fromisoformat(reset_str.replace("Z", "+00:00"))
-                if now_utc >= reset_dt + timedelta(hours=24):
-                    cur_pauses = 0
-            except Exception:
-                pass
+            reset_dt = parse_ts_utc(reset_str)  # W1-1: zelfde tz-bug als de resume
+            if reset_dt and now_utc >= reset_dt + timedelta(hours=24):
+                cur_pauses = 0
 
         if cur_pauses >= MAX_AUTO_PAUSES_24H:
             # Escalate — don't auto-pause again
@@ -641,6 +661,12 @@ def check_smtp_errors(sb: Client, client_id: str) -> None:
                 "notes":     f"Auto-paused after {error_count} SMTP errors in 60 min. Resume at {resume_at}.",
                 "timestamp": _now_utc(),
             }).execute()
+            log_status_transition(
+                sb, inbox_id=iid, from_status=inbox.get("status"), to_status="paused",
+                reason="smtp_errors", source="diagnostics",
+                detail={"errors_60m": error_count, "pause_no": cur_pauses + 1,
+                        "resume_at": resume_at},
+            )
 
         except Exception as exc:
             logger.error("Failed to auto-pause inbox %s: %s", iid, exc)
@@ -867,6 +893,14 @@ def run_diagnostics(run_network_check: bool = False) -> None:
         except Exception as exc:
             logger.error("check_inbox_forecast failed for %s: %s", client_id, exc)
 
+        # W1-1 (mailbox health plan): promotie draaide alleen via een
+        # handmatig endpoint dat niemand aanriep — een inbox die alle
+        # criteria haalde bleef eeuwig 'warmup'. Nu elke tick automatisch.
+        try:
+            promote_eligible_inboxes(sb, client_id)
+        except Exception as exc:
+            logger.error("promote_eligible_inboxes failed for %s: %s", client_id, exc)
+
     if run_network_check:
         # Network check is client-agnostic (shared .env accounts)
         try:
@@ -874,7 +908,73 @@ def run_diagnostics(run_network_check: bool = False) -> None:
         except Exception as exc:
             logger.error("check_network_health failed: %s", exc)
 
+    # W1: het alarm dat zes weken geleden had moeten afgaan — nul ready
+    # inboxen betekent nul verzendcapaciteit voor alles wat op Warmr leunt.
+    try:
+        _alert_if_no_ready_inboxes(sb, clients)
+    except Exception as exc:
+        logger.error("_alert_if_no_ready_inboxes failed: %s", exc)
+
     logger.info("Diagnostics cycle complete.")
+
+
+def promote_eligible_inboxes(sb: Client, client_id: str) -> None:
+    """Draai check_and_promote_inbox voor elke warmup-inbox van deze client.
+
+    De promotie-functie zelf is idempotent en evalueert alle criteria
+    (auto_promote.py); hier zit bewust géén eigen logica — één bron van
+    waarheid voor "mag ready worden".
+    """
+    from auto_promote import check_and_promote_inbox
+
+    resp = (
+        sb.table("inboxes")
+        .select("id, email")
+        .eq("client_id", client_id)
+        .eq("status", "warmup")
+        .execute()
+    )
+    for row in resp.data or []:
+        try:
+            result = check_and_promote_inbox(row["id"], sb)
+            if result.get("promoted"):
+                logger.info("Inbox %s automatisch gepromoveerd naar ready.", row.get("email"))
+        except Exception as exc:
+            logger.error("Promotie-check faalde voor inbox %s: %s", row.get("email"), exc)
+
+
+def _alert_if_no_ready_inboxes(sb: Client, clients: list[str]) -> None:
+    """Urgent-notificatie (max 1 per 24h) zodra er geen enkele ready inbox is."""
+    if not clients:
+        return
+    ready = (
+        sb.table("inboxes").select("id", count="exact")
+        .eq("status", "ready").execute()
+    )
+    if (ready.count or 0) > 0:
+        return
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    try:
+        existing = (
+            sb.table("notifications").select("id")
+            .eq("type", "no_ready_inboxes")
+            .gte("timestamp", since).limit(1).execute()
+        )
+        if existing.data:
+            return
+    except Exception:
+        pass  # dedupe-check faalt → liever een dubbele melding dan geen
+    logger.error("ALERT: 0 ready inboxes — verzendcapaciteit is nul.")
+    _create_notification(
+        sb, clients[0],
+        notification_type="no_ready_inboxes",
+        message=(
+            "Er is momenteel GEEN enkele inbox met status 'ready' — de "
+            "verzendcapaciteit is nul. Check paused/warmup-inboxen en de "
+            "promotiecriteria (inbox_status_log toont waarom transities uitblijven)."
+        ),
+        priority="urgent",
+    )
 
 
 def main() -> None:
