@@ -97,10 +97,15 @@ def _dispatch_stage_webhook(sb: Client, client_id: str, lead_id: str, lead_email
     """Send a webhook event when a lead changes funnel stage."""
     try:
         import httpx
+        from utils.url_safety import assert_url_safe, UnsafeUrlError
         integrations = sb.table("crm_integrations").select("webhook_url").eq("client_id", client_id).eq("active", True).eq("provider", "webhook").execute()
         for integ in (integrations.data or []):
             url = integ.get("webhook_url")
             if url:
+                try:
+                    assert_url_safe(url)
+                except UnsafeUrlError:
+                    continue
                 try:
                     httpx.post(url, json={
                         "event": "lead.stage_changed",

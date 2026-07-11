@@ -5095,6 +5095,11 @@ def _check_query_size_anomaly(client_id: str, table: str, row_count: int, thresh
 # ── Webhook URL verification via challenge-response ──
 async def _verify_webhook_url(url: str) -> bool:
     """Ping the webhook URL with a challenge; expect it echoed back in X-Warmr-Verification."""
+    from utils.url_safety import assert_url_safe, UnsafeUrlError
+    try:
+        assert_url_safe(url)
+    except UnsafeUrlError:
+        return False
     import secrets
     challenge = secrets.token_urlsafe(16)
     try:
@@ -5603,9 +5608,12 @@ async def create_crm_integration(client_id: ClientId, body: dict) -> dict:
     if provider == "webhook":
         if not webhook_url:
             raise HTTPException(status_code=422, detail="webhook_url is required for webhook provider.")
-        # Verify URL ownership via challenge-response
+        # Verify URL ownership via challenge-response. No bypass: a
+        # client-supplied flag to skip server-side URL verification is not a
+        # legitimate feature — it would let a tenant register any internal
+        # URL as a "webhook" without ever proving they control it.
         verified = await _verify_webhook_url(webhook_url)
-        if not verified and not body.get("skip_verification"):
+        if not verified:
             raise HTTPException(
                 status_code=422,
                 detail="Webhook URL verification failed. Your endpoint must respond to GET requests and echo the X-Warmr-Challenge request header back as X-Warmr-Verification.",
@@ -5651,6 +5659,16 @@ async def update_crm_integration(integration_id: str, client_id: ClientId, body:
     patch = {k: v for k, v in body.items() if k in allowed}
     if not patch:
         raise HTTPException(status_code=422, detail="No valid fields to update.")
+    if patch.get("webhook_url"):
+        # Re-verify on every URL change — without this, a tenant could create
+        # an integration with a URL that passes verification, then PATCH it
+        # to an internal address afterward, bypassing the create-time check.
+        verified = await _verify_webhook_url(patch["webhook_url"])
+        if not verified:
+            raise HTTPException(
+                status_code=422,
+                detail="Webhook URL verification failed. Your endpoint must respond to GET requests and echo the X-Warmr-Challenge request header back as X-Warmr-Verification.",
+            )
     # Encrypt the api_key before persisting. encrypt() is idempotent — if the
     # value already starts with "enc:" it's returned unchanged.
     if patch.get("api_key"):

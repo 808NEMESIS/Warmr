@@ -72,6 +72,7 @@ TEST_MODULES = [
     "test_client_deletion",
     "test_gdpr_purge",
     "test_compliance_overview",
+    "test_ssrf_webhook_dispatch",
 ]
 
 

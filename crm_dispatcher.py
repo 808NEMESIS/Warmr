@@ -98,6 +98,14 @@ def sync_to_pipedrive(integration: dict, lead: dict, event_type: str) -> tuple[s
         return "failed", "No Pipedrive API key configured"
 
     company_domain = config.get("company_domain", "api")
+    # company_domain is tenant-supplied config, interpolated directly into the
+    # request host below. A value containing "/" or "@" could break out of the
+    # intended subdomain (e.g. "evil.com/x" or "internal-host@attacker.com")
+    # and redirect the request elsewhere. It's a subdomain label, not a full
+    # URL, so a simple allowlist is enough here — no need for assert_url_safe.
+    import re
+    if not re.fullmatch(r"[a-zA-Z0-9-]{1,63}", company_domain):
+        return "failed", "Invalid Pipedrive company_domain configured"
     base = f"https://{company_domain}.pipedrive.com/api/v1"
 
     person_payload = {
@@ -126,6 +134,12 @@ def sync_to_webhook(integration: dict, lead: dict, event_type: str) -> tuple[str
     url = integration.get("webhook_url", "")
     if not url:
         return "failed", "No webhook URL configured"
+
+    from utils.url_safety import assert_url_safe, UnsafeUrlError
+    try:
+        assert_url_safe(url)
+    except UnsafeUrlError as exc:
+        return "failed", f"Webhook URL rejected: {exc}"
 
     payload = {
         "event": event_type,

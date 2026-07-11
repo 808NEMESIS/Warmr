@@ -39,16 +39,20 @@ _ALLOW_HTTP: bool = os.getenv("WARMR_URL_ALLOW_HTTP", "0") == "1"
 _ALLOWED_SCHEMES = ("https", "http") if _ALLOW_HTTP else ("https",)
 
 # Localhost exception added for local Heatr development on 2026-05-08.
-# These hosts are accepted with http:// without setting WARMR_URL_ALLOW_HTTP,
-# AND bypass the private-IP guard (127.0.0.1 is by definition loopback). The
-# exception is host-specific — every other host still goes through the full
-# SSRF policy, so we don't widen the attack surface for production webhooks.
+# Gated behind WARMR_URL_ALLOW_HTTP (Fase 2, item 5): previously this
+# exception was ungated, so ANY tenant could point a production webhook at
+# 127.0.0.1/localhost and reach whatever is listening on the server's own
+# loopback interface — the exact SSRF this module exists to prevent. Now it
+# only applies in the same local-dev mode that already permits http://
+# globally; in production (flag unset) these hosts fall through to the same
+# scheme + private-IP policy as every other host.
 _LOCALHOST_HOSTS: frozenset[str] = frozenset({"localhost", "127.0.0.1"})
 
 
 def _is_localhost(host: str | None) -> bool:
-    """True when the host is one of the explicit localhost dev exceptions."""
-    return bool(host) and host.lower() in _LOCALHOST_HOSTS
+    """True when the host is one of the explicit localhost dev exceptions
+    AND local-dev mode (WARMR_URL_ALLOW_HTTP) is enabled."""
+    return _ALLOW_HTTP and bool(host) and host.lower() in _LOCALHOST_HOSTS
 
 
 def _is_private_ip(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:

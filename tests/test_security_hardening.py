@@ -44,21 +44,40 @@ def test_ipv6_loopback_still_rejected():
     assert is_url_safe("https://[::1]/") is False
 
 
-# ── Localhost dev exception (added 2026-05-08) ───────────────────────────
+# ── Localhost dev exception (added 2026-05-08, gated behind
+#    WARMR_URL_ALLOW_HTTP as of Fase 2 item 5) ────────────────────────────
 # A scoped carve-out for local Heatr development. Only `localhost` and
-# `127.0.0.1` are exempt from the http-scheme + private-IP guards. Every
-# other private host stays rejected.
+# `127.0.0.1` are exempt from the http-scheme + private-IP guards, and only
+# when local-dev mode is on. Every other private host stays rejected.
 
-def test_localhost_http_allowed():
-    """http://localhost:<port> is the canonical local Heatr webhook URL."""
-    from utils.url_safety import is_url_safe
-    assert is_url_safe("http://localhost:8001/webhooks/warmr") is True
+def test_localhost_http_allowed_when_dev_flag_set(monkeypatch):
+    """http://localhost:<port> is the canonical local Heatr webhook URL —
+    but only when WARMR_URL_ALLOW_HTTP is explicitly enabled."""
+    from utils import url_safety
+    monkeypatch.setattr(url_safety, "_ALLOW_HTTP", True)
+    assert url_safety.is_url_safe("http://localhost:8001/webhooks/warmr") is True
 
 
-def test_127_0_0_1_http_allowed():
+def test_127_0_0_1_http_allowed_when_dev_flag_set(monkeypatch):
     """http://127.0.0.1:<port> mirrors the localhost case."""
+    from utils import url_safety
+    monkeypatch.setattr(url_safety, "_ALLOW_HTTP", True)
+    assert url_safety.is_url_safe("http://127.0.0.1:8001/webhooks/warmr") is True
+
+
+def test_localhost_http_rejected_without_dev_flag():
+    """Regression: previously this carve-out was ungated, so ANY tenant
+    could point a production webhook at 127.0.0.1/localhost and reach
+    whatever's listening on the server's own loopback interface. With
+    WARMR_URL_ALLOW_HTTP unset (the production default), these hosts must
+    now be rejected exactly like any other loopback address."""
     from utils.url_safety import is_url_safe
-    assert is_url_safe("http://127.0.0.1:8001/webhooks/warmr") is True
+    assert is_url_safe("http://localhost:8001/webhooks/warmr") is False
+
+
+def test_127_0_0_1_http_rejected_without_dev_flag():
+    from utils.url_safety import is_url_safe
+    assert is_url_safe("http://127.0.0.1:8001/webhooks/warmr") is False
 
 
 def test_http_other_host_still_rejected():
