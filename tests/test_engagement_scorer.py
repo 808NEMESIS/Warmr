@@ -132,6 +132,27 @@ def test_apply_daily_decay_floors_at_zero():
     assert updates[0]["payload"]["engagement_score"] == 0
 
 
+def test_apply_daily_decay_refreshes_engagement_updated_at():
+    """Regression: previously the decay UPDATE only touched engagement_score,
+    never engagement_updated_at — so every subsequent run recomputed
+    days_inactive from the ORIGINAL activity timestamp and re-applied that
+    full decay on top of an already-decayed score. After N daily runs of
+    continued inactivity this compounds to N(N+1) points removed instead of
+    the intended 2*N (e.g. 12 instead of 6 after 3 days). Refreshing the
+    checkpoint after each decay is what keeps each run's decay additive
+    rather than compounding."""
+    three_days_ago = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+    sb = FakeSupabase(leads_selected=[
+        {"id": "lead-1", "engagement_score": 20, "engagement_updated_at": three_days_ago}
+    ])
+    es.apply_daily_decay(sb)
+    payload = sb._leads.update_calls[0]["payload"]
+    assert "engagement_updated_at" in payload
+    # The new checkpoint must be recent (now), not the stale three-days-ago value.
+    refreshed = datetime.fromisoformat(payload["engagement_updated_at"].replace("Z", "+00:00"))
+    assert (datetime.now(timezone.utc) - refreshed).total_seconds() < 5
+
+
 if __name__ == "__main__":
     failed = 0
     total = 0

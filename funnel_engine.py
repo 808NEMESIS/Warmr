@@ -331,8 +331,7 @@ def snapshot_funnel(sb: Client, client_id: str) -> dict:
 
     Returns: { "cold": N, "warm": N, "hot": N, ... }
     """
-    from datetime import date
-    today = date.today().isoformat()
+    today = datetime.now(timezone.utc).date().isoformat()
 
     resp = sb.table("leads").select("funnel_stage").eq("client_id", client_id).execute()
     leads = resp.data or []

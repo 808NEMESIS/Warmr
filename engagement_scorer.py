@@ -115,8 +115,16 @@ def apply_daily_decay(sb: Client | None = None) -> int:
             new_score = max(0, current - decay)
 
             if new_score != current:
+                # engagement_updated_at is bumped to now so the NEXT run
+                # computes days_inactive from this decay checkpoint, not from
+                # the original activity — without this, a lead left inactive
+                # for N days accumulates 2*(1+2+...+N) = N(N+1) points of
+                # decay across N daily runs instead of the intended 2*N,
+                # since each run recomputes the full elapsed time and applies
+                # it again on top of an already-decayed score.
                 sb.table("leads").update({
                     "engagement_score": round(new_score, 1),
+                    "engagement_updated_at": datetime.now(timezone.utc).isoformat(),
                 }).eq("id", lead_id).execute()
                 decayed += 1
 

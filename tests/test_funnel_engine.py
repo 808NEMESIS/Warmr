@@ -19,6 +19,7 @@ class MockSupabaseTable:
     def __init__(self):
         self.update_calls = []
         self.insert_calls = []
+        self.upsert_calls = []
         self.selected_data = []
         self._filters = {}
 
@@ -28,6 +29,11 @@ class MockSupabaseTable:
 
     def insert(self, payload):
         self.insert_calls.append(payload)
+        self._pending_insert = payload
+        return self
+
+    def upsert(self, payload, on_conflict=None):
+        self.upsert_calls.append(payload)
         self._pending_insert = payload
         return self
 
@@ -241,6 +247,26 @@ def test_default_rules_cover_all_categories():
     rules = fe.get_default_rules()
     required = {"interested", "question", "not_interested", "out_of_office", "referral", "unsubscribe", "other"}
     assert required.issubset(rules.keys())
+
+
+# ── snapshot_funnel ──────────────────────────────────────────────────────
+
+def test_snapshot_funnel_uses_utc_date():
+    """Regression: previously used date.today() (local server time), which
+    can disagree with the rest of the system's UTC-based day boundaries by
+    several hours depending on server timezone."""
+    from datetime import datetime, timezone
+
+    sb = MockSupabase()
+    sb.tables["leads"] = MockSupabaseTable()
+    sb.tables["leads"].selected_data = [{"funnel_stage": "cold"}, {"funnel_stage": "hot"}]
+    sb.tables["funnel_analytics"] = MockSupabaseTable()
+
+    fe.snapshot_funnel(sb, "client-1")
+
+    expected_date = datetime.now(timezone.utc).date().isoformat()
+    dates_written = {u["date"] for u in sb.tables["funnel_analytics"].upsert_calls}
+    assert dates_written == {expected_date}
 
 
 if __name__ == "__main__":
