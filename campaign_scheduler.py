@@ -303,8 +303,12 @@ def filter_recent_cross_campaign_touches(
     Prevents the embarrassing case where the same prospect receives 3 emails
     on the same Tuesday because they're in 3 parallel campaigns.
 
-    Reads `email_events` (event_type='sent') scoped to `client_id`.
-    If client_id is None, this is a no-op — we can't safely scope the query.
+    Reads `email_events` (event_type='sent') scoped to `lead_ids` — those are
+    already tenant-scoped by the caller (leads belonging to campaign_id,
+    which belongs to client_id), so no separate client_id filter is applied
+    here: email_events has no client_id column, and an `.eq("client_id", ...)`
+    on it always raised, silently disabling this dedup entirely.
+    If client_id is None, this is a no-op — we can't safely confirm scoping.
 
     Set `min_days_between_sends=0` to disable.
     """
@@ -323,7 +327,6 @@ def filter_recent_cross_campaign_touches(
         resp = (
             supabase.table("email_events")
             .select("lead_id, campaign_id, timestamp")
-            .eq("client_id", client_id)
             .eq("event_type", "sent")
             .in_("lead_id", lead_ids)
             .gte("timestamp", cutoff_iso)

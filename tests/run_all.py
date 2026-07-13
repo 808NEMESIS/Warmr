@@ -76,6 +76,8 @@ TEST_MODULES = [
     "test_open_redirect",
     "test_retention_engine",
     "test_reputation_helper",
+    "test_cross_campaign_dedup",
+    "test_campaign_performance",
 ]
 
 

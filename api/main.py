@@ -2398,9 +2398,9 @@ async def campaigns_performance(
         cid = c["id"]
         events_resp = (
             _supabase.table("email_events")
-            .select("event_type, lead_id, created_at")
+            .select("event_type, lead_id, timestamp")
             .eq("campaign_id", cid)
-            .gte("created_at", cutoff)
+            .gte("timestamp", cutoff)
             .execute()
         )
         events = events_resp.data or []
@@ -2433,19 +2433,24 @@ async def campaigns_performance(
             "unsub_rate": _rate(unsub, sent),
         })
 
-    # Overall daily trend (all campaigns combined)
-    all_events_resp = (
-        _supabase.table("email_events")
-        .select("event_type, lead_id, created_at")
-        .eq("client_id", client_id)
-        .gte("created_at", cutoff)
-        .limit(20000)
-        .execute()
-    )
-    all_events = all_events_resp.data or []
+    # Overall daily trend (all campaigns combined). email_events has no
+    # client_id column — scope through this client's own campaign_ids
+    # instead (already fetched above). Skip entirely if there are none,
+    # rather than risking an empty .in_("campaign_id", []) edge case.
+    all_events: list[dict] = []
+    if campaigns:
+        all_events_resp = (
+            _supabase.table("email_events")
+            .select("event_type, lead_id, timestamp")
+            .in_("campaign_id", [c["id"] for c in campaigns])
+            .gte("timestamp", cutoff)
+            .limit(20000)
+            .execute()
+        )
+        all_events = all_events_resp.data or []
     daily: dict[str, dict] = {}
     for e in all_events:
-        day = (e.get("created_at") or "")[:10]
+        day = (e.get("timestamp") or "")[:10]
         if not day:
             continue
         if day not in daily:
@@ -2504,12 +2509,14 @@ async def campaign_stats(campaign_id: str, client_id: ClientId):
     """
     campaign_row = _require_row("campaigns", campaign_id, client_id)
 
-    # Count leads in this campaign
+    # Count leads in this campaign. leads has no campaign_id column — that
+    # relation lives on campaign_leads. campaign_id ownership is already
+    # verified by _require_row above, so no separate client_id filter is
+    # needed (campaign_leads has no client_id column either).
     leads_resp = (
-        _supabase.table("leads")
+        _supabase.table("campaign_leads")
         .select("id", count="exact")
         .eq("campaign_id", campaign_id)
-        .eq("client_id", client_id)
         .execute()
     )
     total_leads = leads_resp.count or 0
