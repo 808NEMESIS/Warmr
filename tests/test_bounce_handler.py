@@ -146,17 +146,23 @@ No addresses mentioned here at all."""
 
 
 # ── Reputation delta constants match CLAUDE.md contract ───────────────────
+# bh.BOUNCE_TYPE_TO_EVENT maps classify_bounce()'s output strings to the
+# canonical event names in utils.reputation.REPUTATION_DELTA (Fase 3
+# consolidation — bounce_handler.py no longer keeps its own delta dict).
 
 def test_reputation_delta_hard():
-    assert bh.REPUTATION_DELTA["hard"] == -5.0
+    from utils.reputation import REPUTATION_DELTA
+    assert REPUTATION_DELTA[bh.BOUNCE_TYPE_TO_EVENT["hard"]] == -5.0
 
 
 def test_reputation_delta_soft():
-    assert bh.REPUTATION_DELTA["soft"] == -2.0
+    from utils.reputation import REPUTATION_DELTA
+    assert REPUTATION_DELTA[bh.BOUNCE_TYPE_TO_EVENT["soft"]] == -2.0
 
 
 def test_reputation_delta_spam_complaint():
-    assert bh.REPUTATION_DELTA["spam_complaint"] == -20.0
+    from utils.reputation import REPUTATION_DELTA
+    assert REPUTATION_DELTA[bh.BOUNCE_TYPE_TO_EVENT["spam_complaint"]] == -20.0
 
 
 def test_bounce_rate_threshold_is_3_percent():
@@ -165,6 +171,140 @@ def test_bounce_rate_threshold_is_3_percent():
 
 def test_soft_bounce_retry_limit():
     assert bh.SOFT_BOUNCE_MAX_RETRIES == 3
+
+
+# ── check_inbox_bounce_rate: the 7-day 3% kill switch ─────────────────────
+# Regression coverage for the bug where both counts filtered on
+# email_events.created_at (doesn't exist — the real column is `timestamp`),
+# so this always raised and the kill switch never fired.
+
+from datetime import datetime, timedelta, timezone
+
+
+class _Exec:
+    def __init__(self, data, count=None):
+        self.data = data
+        self.count = count
+
+
+class _BounceRateQuery:
+    def __init__(self, store, table):
+        self.store = store
+        self.table_name = table
+        self._op = "select"
+        self._payload = None
+        self._filters = []
+        self._gte = None
+        self._count_mode = None
+
+    def select(self, *a, count=None, **k):
+        self._count_mode = count
+        return self
+
+    def insert(self, payload):
+        self._op = "insert"
+        self._payload = payload
+        return self
+
+    def update(self, payload):
+        self._op = "update"
+        self._payload = payload
+        return self
+
+    def eq(self, col, val):
+        self._filters.append((col, val))
+        return self
+
+    def gte(self, col, val):
+        self._gte = (col, val)
+        return self
+
+    def limit(self, n):
+        return self
+
+    def _match(self, row):
+        for col, val in self._filters:
+            if row.get(col) != val:
+                return False
+        if self._gte:
+            col, cutoff = self._gte
+            if not (row.get(col) or "") >= cutoff:
+                return False
+        return True
+
+    def execute(self):
+        rows = self.store.setdefault(self.table_name, [])
+        if self._op == "insert":
+            rows.append(self._payload)
+            return _Exec([self._payload])
+        matched = [r for r in rows if self._match(r)]
+        if self._op == "update":
+            for r in matched:
+                r.update(self._payload)
+        count = len(matched) if self._count_mode else None
+        return _Exec(matched, count=count)
+
+
+class _FakeBounceRateSb:
+    def __init__(self):
+        self.store: dict[str, list[dict]] = {}
+
+    def table(self, name):
+        return _BounceRateQuery(self.store, name)
+
+
+def _events(inbox_id: str, sent: int, bounced: int, days_ago: float = 1) -> list[dict]:
+    ts = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
+    rows = [{"inbox_id": inbox_id, "event_type": "sent", "timestamp": ts} for _ in range(sent)]
+    rows += [{"inbox_id": inbox_id, "event_type": "bounced", "timestamp": ts} for _ in range(bounced)]
+    return rows
+
+
+def test_check_inbox_bounce_rate_pauses_inbox_over_threshold():
+    sb = _FakeBounceRateSb()
+    sb.store["email_events"] = _events("inbox-1", sent=40, bounced=3)  # 7.5% > 3%
+    sb.store["inboxes"] = [{"id": "inbox-1", "email": "a@b.nl", "client_id": "c1", "status": "warmup"}]
+
+    bh.check_inbox_bounce_rate(sb, "inbox-1")
+
+    updated = next(r for r in sb.store["inboxes"] if r["id"] == "inbox-1")
+    assert updated["status"] == "paused"
+    assert updated["warmup_active"] is False
+
+
+def test_check_inbox_bounce_rate_leaves_inbox_alone_under_threshold():
+    sb = _FakeBounceRateSb()
+    sb.store["email_events"] = _events("inbox-1", sent=40, bounced=1)  # 2.5% < 3%
+    sb.store["inboxes"] = [{"id": "inbox-1", "email": "a@b.nl", "client_id": "c1", "status": "warmup"}]
+
+    bh.check_inbox_bounce_rate(sb, "inbox-1")
+
+    updated = next(r for r in sb.store["inboxes"] if r["id"] == "inbox-1")
+    assert updated["status"] == "warmup"
+
+
+def test_check_inbox_bounce_rate_skips_below_sample_size():
+    """Under 30 sends, even a 100% bounce rate must not trigger a pause —
+    not enough sample size to trust the ratio."""
+    sb = _FakeBounceRateSb()
+    sb.store["email_events"] = _events("inbox-1", sent=10, bounced=10)
+    sb.store["inboxes"] = [{"id": "inbox-1", "email": "a@b.nl", "client_id": "c1", "status": "warmup"}]
+
+    bh.check_inbox_bounce_rate(sb, "inbox-1")
+
+    updated = next(r for r in sb.store["inboxes"] if r["id"] == "inbox-1")
+    assert updated["status"] == "warmup"
+
+
+def test_check_inbox_bounce_rate_ignores_events_outside_the_7day_window():
+    sb = _FakeBounceRateSb()
+    sb.store["email_events"] = _events("inbox-1", sent=40, bounced=10, days_ago=30)  # stale, outside window
+    sb.store["inboxes"] = [{"id": "inbox-1", "email": "a@b.nl", "client_id": "c1", "status": "warmup"}]
+
+    bh.check_inbox_bounce_rate(sb, "inbox-1")
+
+    updated = next(r for r in sb.store["inboxes"] if r["id"] == "inbox-1")
+    assert updated["status"] == "warmup"  # below sample size within the window (0 counted)
 
 
 if __name__ == "__main__":

@@ -51,11 +51,14 @@ IMAP_PORT = 993
 BOUNCE_RATE_THRESHOLD = 0.03   # 3% in 7 days → pause inbox
 SOFT_BOUNCE_MAX_RETRIES = 3
 
-# Reputation deltas per CLAUDE.md
-REPUTATION_DELTA = {
-    "hard": -5.0,
-    "soft": -2.0,
-    "spam_complaint": -20.0,
+# classify_bounce()'s output strings -> the canonical event names in
+# utils.reputation.REPUTATION_DELTA. Kept separate from classify_bounce's
+# return values themselves, since those are also used for bounce_log.bounce_type
+# and leads.status elsewhere and must not change.
+BOUNCE_TYPE_TO_EVENT = {
+    "hard": "hard_bounce",
+    "soft": "soft_bounce",
+    "spam_complaint": "spam_complaint",
 }
 
 # Sender addresses that produce bounce messages
@@ -250,22 +253,27 @@ def log_bounce(
 
 
 def apply_reputation_delta(sb: Client, inbox_id: str, bounce_type: str) -> None:
-    """Adjust reputation_score on the inbox. Floor at 0, cap at 100."""
-    delta = REPUTATION_DELTA.get(bounce_type, 0)
-    if not delta:
+    """Adjust reputation_score on the inbox atomically. Floor at 0, cap at 100."""
+    event = BOUNCE_TYPE_TO_EVENT.get(bounce_type)
+    if not event:
         return
-    try:
-        row = sb.table("inboxes").select("reputation_score, spam_complaints").eq("id", inbox_id).limit(1).execute()
-        current = float((row.data or [{}])[0].get("reputation_score") or 50)
-        new = max(0.0, min(100.0, current + delta))
-        update: dict = {"reputation_score": round(new, 2)}
-        if bounce_type == "spam_complaint":
-            complaints = int((row.data or [{}])[0].get("spam_complaints") or 0) + 1
-            update["spam_complaints"] = complaints
-            update["last_spam_incident"] = _now()
-        sb.table("inboxes").update(update).eq("id", inbox_id).execute()
-    except Exception as exc:
-        logger.error("Failed to apply reputation delta for inbox %s: %s", inbox_id, exc)
+    from utils.reputation import bump_reputation
+    bump_reputation(sb, inbox_id, {event: 1})
+
+    if bounce_type == "spam_complaint":
+        try:
+            sb.rpc("increment_spam_complaints", {"p_inbox_id": inbox_id}).execute()
+        except Exception as exc:
+            logger.debug("increment_spam_complaints RPC failed for inbox %s, falling back: %s", inbox_id, exc)
+            try:
+                row = sb.table("inboxes").select("spam_complaints").eq("id", inbox_id).limit(1).execute()
+                complaints = int((row.data or [{}])[0].get("spam_complaints") or 0) + 1
+                sb.table("inboxes").update({
+                    "spam_complaints": complaints,
+                    "last_spam_incident": _now(),
+                }).eq("id", inbox_id).execute()
+            except Exception as exc2:
+                logger.error("Failed to increment spam_complaints for inbox %s: %s", inbox_id, exc2)
 
 
 def mark_lead_and_campaign_bounced(sb: Client, lead_email: str, bounce_type: str, client_id: str) -> Optional[str]:
@@ -315,7 +323,7 @@ def check_inbox_bounce_rate(sb: Client, inbox_id: str) -> None:
             .select("id", count="exact")
             .eq("inbox_id", inbox_id)
             .eq("event_type", "sent")
-            .gte("created_at", since)
+            .gte("timestamp", since)
             .execute()
         )
         bounced = (
@@ -323,7 +331,7 @@ def check_inbox_bounce_rate(sb: Client, inbox_id: str) -> None:
             .select("id", count="exact")
             .eq("inbox_id", inbox_id)
             .eq("event_type", "bounced")
-            .gte("created_at", since)
+            .gte("timestamp", since)
             .execute()
         )
         sent_count = sent.count or 0

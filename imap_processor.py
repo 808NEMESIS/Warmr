@@ -61,17 +61,6 @@ REPLY_RATE: float = float(os.getenv("REPLY_RATE", "0.35"))
 IMAP_PORT: int = 993  # SSL
 SMTP_PORT: int = 465  # SSL
 
-# Reputation score deltas per event (from CLAUDE.md)
-REPUTATION_DELTA: dict[str, float] = {
-    "sent": 0.2,
-    "received": 0.5,
-    "spam_rescued": 1.0,
-    "opened": 0.3,
-    "soft_bounce": -2.0,
-    "hard_bounce": -5.0,
-    "spam_complaint": -20.0,
-}
-
 # Candidate spam/junk folder names across providers
 SPAM_FOLDER_CANDIDATES: list[str] = [
     "[Gmail]/Spam",
@@ -226,36 +215,6 @@ def log_action(
         ).execute()
     except Exception as exc:
         logger.error("Failed to write warmup_log for inbox %s action=%s: %s", inbox_id, action, exc)
-
-
-def update_reputation(
-    supabase: Client,
-    inbox_id: str,
-    current_score: float,
-    events: dict[str, int],
-) -> float:
-    """
-    Apply reputation delta for each event type and persist the new score.
-
-    Args:
-        inbox_id: UUID of the client inbox.
-        current_score: Current reputation_score value from the DB row.
-        events: Dict mapping event name → count, e.g. {"received": 2, "spam_rescued": 1}.
-
-    Returns:
-        The updated reputation score after clamping to [0, 100].
-    """
-    delta = sum(REPUTATION_DELTA.get(event, 0.0) * count for event, count in events.items())
-    new_score = max(0.0, min(100.0, current_score + delta))
-
-    try:
-        supabase.table("inboxes").update(
-            {"reputation_score": round(new_score, 2), "updated_at": datetime.utcnow().isoformat()}
-        ).eq("id", inbox_id).execute()
-    except Exception as exc:
-        logger.error("Failed to update reputation for inbox %s: %s", inbox_id, exc)
-
-    return new_score
 
 
 def increment_spam_rescues(supabase: Client, inbox_id: str, count: int) -> None:
@@ -907,8 +866,9 @@ def process_warmup_network_account(
                     daily_volume=client_inbox.get("daily_sent") or 0,
                 )
 
-                # Reputation: +0.5 for received/opened
-                reputation_events: dict[str, int] = {"received": 1}
+                # Reputation: +0.5 for the warmup exchange, +0.3 for opening it —
+                # marking \Seen above IS the "opened" action in this simulated flow.
+                reputation_events: dict[str, int] = {"received": 1, "opened": 1}
 
                 # Decide whether to send a reply
                 send_reply = random.random() < REPLY_RATE
@@ -970,7 +930,8 @@ def process_warmup_network_account(
                             )
 
                 # Update reputation for this inbox
-                update_reputation(supabase, inbox_id, reputation_score, reputation_events)
+                from utils.reputation import bump_reputation
+                bump_reputation(supabase, inbox_id, reputation_events, current_score=reputation_score)
 
             except Exception as exc:
                 logger.error("Warmup account %s: error processing message %s: %s", net_email, msg_id, exc)
@@ -1044,11 +1005,12 @@ def _run_cycle() -> None:
             if rescued > 0:
                 # Update lifetime spam_rescues counter and apply reputation delta
                 increment_spam_rescues(supabase, inbox["id"], rescued)
-                update_reputation(
+                from utils.reputation import bump_reputation
+                bump_reputation(
                     supabase,
                     inbox["id"],
-                    inbox.get("reputation_score") or 50.0,
                     {"spam_rescued": rescued},
+                    current_score=inbox.get("reputation_score") or 50.0,
                 )
                 logger.info("Inbox %s: rescued %d email(s) from spam.", inbox_email, rescued)
         except Exception as exc:
@@ -1107,8 +1069,18 @@ def _run_cycle() -> None:
                     if sender_address not in warmup_emails:
                         continue
 
-                    # Mark as read
+                    # Mark as read (simulates opening the email)
                     mail.store(msg_id, "+FLAGS", "\\Seen")
+
+                    # Reward the exchange regardless of whether we reply back —
+                    # receiving+opening a warmup reply is itself the "successful
+                    # warmup exchange" event (CLAUDE.md). Previously this path
+                    # rewarded nothing for the receipt, and its own reply-back
+                    # credit further down used a "replied" key that isn't in
+                    # REPUTATION_DELTA — a no-op that looked like a real update.
+                    from utils.reputation import bump_reputation
+                    bump_reputation(supabase, inbox_id, {"received": 1, "opened": 1},
+                                     current_score=inbox.get("reputation_score") or 50.0)
 
                     # Count Re: depth — stop after 3 exchanges
                     re_depth = subject.lower().count("re:")
@@ -1152,7 +1124,9 @@ def _run_cycle() -> None:
                             subject=f"Re: {subject}" if not subject.lower().startswith("re:") else subject,
                             was_replied=True,
                         )
-                        update_reputation(supabase, inbox_id, inbox.get("reputation_score") or 50.0, {"replied": 1})
+                        # No separate reputation credit here — replying back is not
+                        # a distinct documented event; the exchange was already
+                        # rewarded above when the message was received/opened.
                         logger.info("Client inbox %s: replied back to %s (depth %d).", inbox_email, sender_address, re_depth + 1)
                     except Exception as exc:
                         logger.error("Client inbox %s: SMTP reply-back failed: %s", inbox_email, exc)

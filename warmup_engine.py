@@ -728,6 +728,9 @@ def process_inbox(
     )
     update_daily_sent(supabase, inbox_id, new_daily_sent)
 
+    from utils.reputation import bump_reputation
+    bump_reputation(supabase, inbox_id, {"sent": 1}, current_score=reputation_score)
+
     logger.info(
         "Inbox %s → %s | week %d | %d/%d sent today | subject: %s",
         inbox_email,
