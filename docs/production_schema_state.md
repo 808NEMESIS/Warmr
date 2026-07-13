@@ -178,3 +178,19 @@ ORDER BY table_name;
 
 - **Tweede-laags cascade-check (punt 5 hierboven) — nog niet gedraaid.** Laatste stuk om Critical 4 + de FK-kant van Critical 7 definitief te sluiten.
 - `full_schema.sql` regenereren uit een echte dump — niet gestart.
+
+## §7 — Fase 2/3 migraties toegepast en bevestigd (2026-07-13)
+
+6. **CONFIRMED — `api/retention_migration.sql` toegepast.** Verificatiequery teruggekregen:
+   ```json
+   [
+     {"column_name": "closed_at", "data_type": "timestamp without time zone", "is_nullable": "YES"},
+     {"column_name": "retention_days", "data_type": "integer", "is_nullable": "YES"}
+   ]
+   ```
+   `client_settings.retention_days` en `clients.closed_at` bestaan, beide nullable zoals bedoeld. `retention_engine.py` (Fase 2, Track 2) kan nu tegen de echte kolommen draaien — nog niet als scheduled job geïnstalleerd (`install_launchd.sh`'s `retention-engine`-entry staat al klaar in de code, maar `launchctl load` is nooit door de gebruiker bevestigd).
+7. **CONFIRMED — `api/reputation_migration.sql` toegepast.** Verificatiequery teruggekregen:
+   ```json
+   [{"proname": "apply_reputation_delta"}, {"proname": "increment_spam_complaints"}]
+   ```
+   Beide RPC's bestaan. `utils/reputation.py`'s `bump_reputation()` en `bounce_handler.py`'s spam-complaint-increment lopen vanaf nu via de atomic RPC-tak (niet meer de non-atomic fallback) — de lost-update-race op `reputation_score`/`spam_complaints` is hiermee in productie gesloten, niet alleen in code.
