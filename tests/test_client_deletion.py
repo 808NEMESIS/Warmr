@@ -14,7 +14,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from utils.client_deletion import hard_delete_client, CLIENT_ID_TABLES, INBOX_SCOPED_TABLES
+from utils.client_deletion import (
+    hard_delete_client,
+    CLIENT_ID_TABLES,
+    INBOX_SCOPED_TABLES,
+    FK_BLOCKING_CLIENT_ID_TABLES,
+)
 
 
 class _Exec:
@@ -132,8 +137,73 @@ def test_hard_delete_records_every_table_outcome_not_swallowed():
     sb = _seeded_sb()
     deleted = hard_delete_client(sb, "client-A")
 
-    for table in CLIENT_ID_TABLES + INBOX_SCOPED_TABLES + ["clients"]:
+    for table in CLIENT_ID_TABLES + INBOX_SCOPED_TABLES + FK_BLOCKING_CLIENT_ID_TABLES + ["email_events", "clients"]:
         assert table in deleted, f"{table} missing from delete report"
+
+
+def test_hard_delete_clears_email_events_which_has_no_client_id_column():
+    """Regression: email_events was never deleted at all by hard_delete_client
+    (not in CLIENT_ID_TABLES — correctly, since it has no client_id column —
+    but also never handled via any other scoping). Its FKs to inboxes/
+    campaigns/leads are ON DELETE NO ACTION (confirmed via pg_constraint),
+    so leaving it untouched makes the final `clients` delete (which cascades
+    into inboxes/campaigns/leads) fail with a foreign-key violation for any
+    client with campaign history."""
+    sb = _seeded_sb()
+    sb.store["email_events"] = [
+        {"id": "ee-1", "inbox_id": "inbox-1", "campaign_id": None, "lead_id": "lead-1"},
+        {"id": "ee-2", "inbox_id": "inbox-B", "campaign_id": None, "lead_id": "lead-B"},
+    ]
+
+    deleted = hard_delete_client(sb, "client-A")
+
+    remaining = [r["id"] for r in sb.store["email_events"]]
+    assert remaining == ["ee-2"]  # only the other tenant's row survives
+    assert deleted["email_events"] == 1
+
+
+def test_hard_delete_clears_fk_blocking_tables_before_their_parents():
+    """Regression: reply_inbox and sending_schedule reference inboxes/
+    campaigns/leads via ON DELETE NO ACTION. Previously they sat AFTER
+    campaigns/inboxes/leads in CLIENT_ID_TABLES, so those parent deletes (and
+    the client-level cascade at the very end) would fail while reply_inbox/
+    sending_schedule rows still existed. This fake enforces the same
+    ordering constraint Postgres does, to prove the real call order works."""
+
+    class _FkEnforcingQuery(_Query):
+        def execute(self):
+            if self._op == "delete" and self.table_name in ("campaigns", "inboxes", "leads", "clients"):
+                matched_ids = {r["id"] for r in self.store.get(self.table_name, []) if self._match(r)}
+                fk_col = {"campaigns": "campaign_id", "inboxes": "inbox_id", "leads": "lead_id"}.get(self.table_name)
+                for child_table in ("email_events", "reply_inbox", "sending_schedule"):
+                    for row in self.store.get(child_table, []):
+                        if fk_col and row.get(fk_col) in matched_ids:
+                            raise RuntimeError(f"foreign key violation: {child_table}.{fk_col} -> {self.table_name}")
+            return super().execute()
+
+    class _FkEnforcingSupabase(FakeSupabase):
+        def table(self, name):
+            return _FkEnforcingQuery(self.store, name)
+
+    sb = _FkEnforcingSupabase()
+    sb.store["inboxes"] = [{"id": "inbox-1", "client_id": "client-A"}]
+    sb.store["campaigns"] = [{"id": "camp-1", "client_id": "client-A"}]
+    sb.store["leads"] = [{"id": "lead-1", "client_id": "client-A"}]
+    sb.store["clients"] = [{"id": "client-A"}]
+    sb.store["email_events"] = [{"id": "ee-1", "inbox_id": "inbox-1", "campaign_id": "camp-1", "lead_id": "lead-1"}]
+    sb.store["reply_inbox"] = [{"id": "ri-1", "client_id": "client-A", "inbox_id": "inbox-1",
+                                "campaign_id": "camp-1", "lead_id": "lead-1"}]
+    sb.store["sending_schedule"] = [{"id": "ss-1", "client_id": "client-A", "inbox_id": "inbox-1"}]
+
+    deleted = hard_delete_client(sb, "client-A")
+
+    assert deleted["campaigns"] == 1
+    assert deleted["inboxes"] == 1
+    assert deleted["leads"] == 1
+    assert deleted["clients"] == 1
+    assert deleted["email_events"] == 1
+    assert deleted["reply_inbox"] == 1
+    assert deleted["sending_schedule"] == 1
 
 
 def test_hard_delete_with_no_inboxes_still_completes():

@@ -176,7 +176,6 @@ ORDER BY table_name;
 
 ### Nog open (blokkeert niets nu, wel relevant voor toekomstig werk)
 
-- **Tweede-laags cascade-check (punt 5 hierboven) — nog niet gedraaid.** Laatste stuk om Critical 4 + de FK-kant van Critical 7 definitief te sluiten.
 - `full_schema.sql` regenereren uit een echte dump — niet gestart.
 
 ## §7 — Fase 2/3 migraties toegepast en bevestigd (2026-07-13)
@@ -194,3 +193,9 @@ ORDER BY table_name;
    [{"proname": "apply_reputation_delta"}, {"proname": "increment_spam_complaints"}]
    ```
    Beide RPC's bestaan. `utils/reputation.py`'s `bump_reputation()` en `bounce_handler.py`'s spam-complaint-increment lopen vanaf nu via de atomic RPC-tak (niet meer de non-atomic fallback) — de lost-update-race op `reputation_score`/`spam_complaints` is hiermee in productie gesloten, niet alleen in code.
+8. **CONFIRMED (2026-07-14) — tweede-laags cascade-check gedraaid (punt 5 hierboven definitief gesloten), en heeft een echte bug in `hard_delete_client` blootgelegd.** Resultaat (19 rijen, codes teruggegeven als losse letter i.p.v. de gemapte tekst — C=CASCADE, N=NO ACTION, S=SET NULL, afgeleid uit de al-bevestigde eerste-laags patronen):
+   - **NO ACTION** (blokkeert deletion als er nog kind-rijen bestaan): `warmup_logs/sending_schedule/bounce_log/email_events/reply_inbox → inboxes`; `email_events/reply_inbox → campaigns`; `email_events/reply_inbox → leads`.
+   - **CASCADE**: `placement_tests → inboxes`; `dns_check_log/blacklist_recoveries → domains`; `sequence_steps/campaign_leads/sequence_suggestions → campaigns`; `campaign_leads/enrichment_queue → leads`; `placement_test_results → placement_tests`.
+   - **SET NULL**: `experiments.variant_campaign_id/control_campaign_id → campaigns`.
+
+   **Bug (gevonden, niet alleen bevestigd):** `utils/client_deletion.py`'s `hard_delete_client` verwijderde `email_events` helemaal nooit (niet in `CLIENT_ID_TABLES`, geen aparte scoping — ondanks dat de tabel wél `inbox_id`/`campaign_id`/`lead_id` heeft), en had `reply_inbox`/`sending_schedule` ná `campaigns`/`inboxes`/`leads` in de deletion-volgorde staan. Gevolg: voor elke client met campagne-historie (dus met `email_events`-rijen) faalde de laatste stap (`DELETE FROM clients`, die cascadet naar `campaigns`/`inboxes`/`leads`) met een foreign-key-violation — de client bleef gewoon bestaan ondanks een "geslaagde" GDPR-verwijdering. **Gefixt dezelfde dag**: `email_events` expliciet verwijderd via inbox_id/campaign_id/lead_id vóór de hoofdloop, `reply_inbox`/`sending_schedule` verplaatst naar vóór `campaigns`/`inboxes`/`leads`. 291/291 tests groen, inclusief 2 nieuwe regressietests die de FK-volgorde expliciet afdwingen in de fake.
