@@ -80,6 +80,8 @@ TEST_MODULES = [
     "test_campaign_performance",
     "test_events",
     "test_stage_progression_engagement",
+    "test_state_machine",
+    "test_state_machines_registry",
 ]
 
 

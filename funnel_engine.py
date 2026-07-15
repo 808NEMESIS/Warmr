@@ -27,6 +27,8 @@ from typing import Optional
 from dotenv import load_dotenv
 from supabase import Client, create_client
 
+from utils.state_machines_registry import CAMPAIGN_LEAD_STATUS
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -244,6 +246,8 @@ def route_reply(
     elif action == "stop_sequence":
         move_to_stage(sb, lead_id, "lost", f"reply classified as {classification}")
         # Stop all active campaign_leads for this lead
+        for _from in ("active", "pending"):
+            CAMPAIGN_LEAD_STATUS.check_log_only(_from, "completed", logger)
         try:
             sb.table("campaign_leads").update({
                 "status": "completed",
@@ -391,6 +395,8 @@ def check_domain_bounce_pattern(sb: Client, client_id: str, campaign_id: str) ->
                 all_domain_leads = sb.table("leads").select("id").eq("client_id", client_id).eq("domain", domain).execute()
                 all_ids = [l["id"] for l in (all_domain_leads.data or [])]
                 if all_ids:
+                    for _from in ("active", "pending"):
+                        CAMPAIGN_LEAD_STATUS.check_log_only(_from, "paused", logger)
                     sb.table("campaign_leads").update({
                         "status": "paused",
                     }).in_("lead_id", all_ids).in_("status", ["active", "pending"]).execute()

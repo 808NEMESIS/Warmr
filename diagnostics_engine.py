@@ -69,6 +69,7 @@ DRIFT_MIN_DAYS:       int   = 3       # consecutive days of decline needed
 DRIFT_MIN_POINTS:     float = 3.0     # total drop across those days
 from utils.status_log import log_status_transition
 from utils.timeparse import parse_ts_utc
+from utils.state_machines_registry import INBOX_STATUS
 
 CRITICAL_REP_THRESHOLD: float = 35.0   # auto-pause inbox if reputation drops below this
 
@@ -255,6 +256,7 @@ def check_reputation_drift(sb: Client, client_id: str) -> None:
         # ── Critical reputation threshold check — auto-pause if below ──
         if current_score < CRITICAL_REP_THRESHOLD and current_status != "paused":
             try:
+                INBOX_STATUS.check_log_only(current_status or None, "paused", logger)
                 sb.table("inboxes").update({
                     "status": "paused",
                     "warmup_active": False,
@@ -577,6 +579,7 @@ def check_smtp_errors(sb: Client, client_id: str) -> None:
                 # utils/timeparse.parse_ts_utc.
                 reset_at = parse_ts_utc(reset_at_str)
                 if reset_at and now_utc >= reset_at:
+                    INBOX_STATUS.check_log_only("paused", "warmup", logger)
                     sb.table("inboxes").update({
                         "status":             "warmup",
                         "auto_pause_reset_at": None,
@@ -649,6 +652,7 @@ def check_smtp_errors(sb: Client, client_id: str) -> None:
         # Auto-pause
         resume_at = (now_utc + timedelta(hours=AUTO_PAUSE_DURATION_HOURS)).isoformat()
         try:
+            INBOX_STATUS.check_log_only(inbox.get("status"), "paused", logger)
             sb.table("inboxes").update({
                 "status":                "paused",
                 "auto_pause_count_24h":  cur_pauses + 1,

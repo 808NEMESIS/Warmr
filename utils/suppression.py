@@ -17,6 +17,8 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from utils.state_machines_registry import CAMPAIGN_LEAD_STATUS
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,6 +45,8 @@ def suppress_and_cancel(
         pass  # already suppressed
 
     try:
+        for _from in ("active", "pending"):
+            CAMPAIGN_LEAD_STATUS.check_log_only(_from, "unsubscribed", logger)
         supabase.table("campaign_leads").update({
             "status": "unsubscribed",
         }).eq("lead_id", lead_id).in_("status", ["active", "pending"]).execute()

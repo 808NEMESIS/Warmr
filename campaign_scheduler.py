@@ -44,6 +44,7 @@ from supabase import Client, create_client
 from ab_test_engine import select_variant
 from inbox_rotator import select_inbox
 from spintax_engine import process_content
+from utils.state_machines_registry import CAMPAIGN_LEAD_STATUS
 
 load_dotenv()
 
@@ -497,6 +498,7 @@ def update_campaign_lead_after_send(
     # status='active'). Final step is marked 'completed' instead.
     update["status"] = "completed" if completed else "active"
     update["status_changed_at"] = datetime.now(timezone.utc).isoformat()
+    CAMPAIGN_LEAD_STATUS.check_log_only("sending", update["status"], logger)
     if thread_message_id:
         update["thread_message_id"] = thread_message_id
     if last_inbox_id:
@@ -929,6 +931,7 @@ def process_lead(
             lead.get("email"), campaign.get("name"),
         )
         # Mark the campaign_lead so we don't re-attempt every run.
+        CAMPAIGN_LEAD_STATUS.check_log_only(campaign_lead.get("status"), "bounced", logger)
         try:
             supabase.table("campaign_leads").update({"status": "bounced"}).eq("id", campaign_lead_id).execute()
         except Exception:
@@ -969,6 +972,7 @@ def process_lead(
     # The loser gets an empty list and must not send. update_campaign_lead_
     # after_send reopens the lead to 'active' for the next step; the SMTP
     # failure path below reverts it so a failed send can be retried.
+    CAMPAIGN_LEAD_STATUS.check_log_only("active", "sending", logger)
     try:
         claim = (
             supabase.table("campaign_leads")

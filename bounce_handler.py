@@ -31,6 +31,8 @@ from typing import Optional
 from dotenv import load_dotenv
 from supabase import Client, create_client
 
+from utils.state_machines_registry import CAMPAIGN_LEAD_STATUS, INBOX_STATUS
+
 load_dotenv()
 
 logging.basicConfig(
@@ -305,6 +307,8 @@ def mark_lead_and_campaign_bounced(sb: Client, lead_email: str, bounce_type: str
 
         # Halt active campaign_leads for this lead
         if bounce_type in ("hard", "spam_complaint"):
+            for _from in ("active", "pending"):
+                CAMPAIGN_LEAD_STATUS.check_log_only(_from, "bounced", logger)
             sb.table("campaign_leads").update({
                 "status": "bounced",
             }).eq("lead_id", lead_id).in_("status", ["active", "pending"]).execute()
@@ -346,6 +350,7 @@ def check_inbox_bounce_rate(sb: Client, inbox_id: str) -> None:
             status = (inbox_row.data or [{}])[0].get("status", "")
             if status == "paused":
                 return
+            INBOX_STATUS.check_log_only(status or None, "paused", logger)
             sb.table("inboxes").update({
                 "status": "paused",
                 "warmup_active": False,

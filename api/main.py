@@ -516,6 +516,9 @@ async def pause_inbox(inbox_id: str, payload: dict, client_id: ClientId):
     warmup_active: bool = bool(payload.get("warmup_active", False))
     new_status = "warmup" if warmup_active else "paused"
 
+    from utils.state_machines_registry import INBOX_STATUS
+    INBOX_STATUS.check_log_only(before_row.get("status"), new_status, logger)
+
     resp = (
         _supabase.table("inboxes")
         .update({"warmup_active": warmup_active, "status": new_status, "updated_at": _now_utc()})
@@ -540,11 +543,17 @@ async def pause_inbox(inbox_id: str, payload: dict, client_id: ClientId):
 @app.patch("/inboxes/{inbox_id}", tags=["Inboxes"])
 async def patch_inbox(inbox_id: str, payload: dict, client_id: ClientId):
     """General patch for inbox fields: status, warmup_active, notes, daily_warmup_target."""
-    _require_row("inboxes", inbox_id, client_id)
+    before_row = _require_row("inboxes", inbox_id, client_id)
     allowed = {"status", "warmup_active", "notes", "daily_warmup_target", "daily_campaign_target"}
     patch = {k: v for k, v in payload.items() if k in allowed}
     if not patch:
         raise HTTPException(status_code=400, detail="No valid fields to update.")
+    if "status" in patch:
+        # This endpoint writes status with NO value/transition validation at
+        # all — the one write path utils/status_log.py's audit trail never
+        # covers either. Fase 4b: log-only observation, does not block yet.
+        from utils.state_machines_registry import INBOX_STATUS
+        INBOX_STATUS.check_log_only(before_row.get("status"), patch["status"], logger)
     patch["updated_at"] = _now_utc()
     resp = _supabase.table("inboxes").update(patch).eq("id", inbox_id).execute()
     return resp.data[0] if resp.data else {}

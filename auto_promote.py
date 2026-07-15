@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from utils.status_log import log_status_transition
+from utils.state_machines_registry import INBOX_STATUS
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +202,7 @@ def check_and_promote_inbox(inbox_id: str, supabase) -> dict:
 
     # All criteria pass → promote.
     new_status = "ready"
+    INBOX_STATUS.check_log_only(previous_status, new_status, logger)
     supabase.table("inboxes").update({
         "status": new_status,
         # warmup_active stays True — Warmr keeps reputation-maintenance traffic.
