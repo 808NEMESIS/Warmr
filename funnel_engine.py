@@ -269,23 +269,13 @@ def route_reply(
 
     elif action == "suppress":
         move_to_stage(sb, lead_id, "unsubscribed", "opt-out via reply")
-        # Add to suppression list
+        # Suppress + cancel pending sends via the one shared implementation
+        # (Fase 2) — this branch previously reimplemented the same insert +
+        # cancel inline, a third independent copy alongside the link-click
+        # and reply-based unsubscribe paths that Fase 2 already consolidated.
         try:
-            domain = lead_email.split("@")[-1] if "@" in lead_email else None
-            sb.table("suppression_list").insert({
-                "client_id": client_id,
-                "email": lead_email,
-                "domain": domain,
-                "reason": "unsubscribe",
-                "source": campaign_id or "reply",
-            }).execute()
-        except Exception:
-            pass  # Already suppressed
-        # Stop all sequences
-        try:
-            sb.table("campaign_leads").update({
-                "status": "unsubscribed",
-            }).eq("lead_id", lead_id).in_("status", ["active", "pending"]).execute()
+            from utils.suppression import suppress_and_cancel
+            suppress_and_cancel(sb, client_id, lead_id, lead_email, source=campaign_id or "reply")
         except Exception:
             pass
 
