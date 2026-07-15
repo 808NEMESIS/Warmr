@@ -167,6 +167,20 @@ def inject_tracking_pixel(html_body: str, tracking_token: str) -> str:
     return html_body + pixel
 
 
+def _lead_has_event(supabase: Client, lead_id: str, campaign_id: str, event_type: str) -> bool:
+    """Whether this lead has any `event_type` row in email_events for this campaign."""
+    resp = (
+        supabase.table("email_events")
+        .select("id")
+        .eq("campaign_id", campaign_id)
+        .eq("lead_id", lead_id)
+        .eq("event_type", event_type)
+        .limit(1)
+        .execute()
+    )
+    return bool(resp.data)
+
+
 def check_step_condition(supabase: Client, step: dict, lead_id: str, campaign_id: str, current_step: int) -> bool:
     """
     Evaluate whether a conditional step should send.
@@ -185,16 +199,7 @@ def check_step_condition(supabase: Client, step: dict, lead_id: str, campaign_id
     # Look up tracking events for this lead+campaign at the check_step
     # We use email_events (opened/clicked) which our tracking pixel feeds into
     event_type = "opened" if "opened" in cond_type else "clicked"
-    resp = (
-        supabase.table("email_events")
-        .select("id")
-        .eq("campaign_id", campaign_id)
-        .eq("lead_id", lead_id)
-        .eq("event_type", event_type)
-        .limit(1)
-        .execute()
-    )
-    has_event = bool(resp.data)
+    has_event = _lead_has_event(supabase, lead_id, campaign_id, event_type)
 
     if cond_type in ("if_opened", "if_clicked"):
         return has_event
@@ -1061,10 +1066,16 @@ def process_lead(
             completed=False,
             last_inbox_id=inbox_id,
         )
-        # Funnel: check stage progression based on engagement
+        # Funnel: check stage progression based on engagement. Previously
+        # called without has_opened/has_clicked, which silently default to
+        # False in check_stage_progression's signature — engagement-triggered
+        # cold->warm/warm->hot transitions were dead in practice, only the
+        # step-count fallback ever fired.
         try:
             from funnel_engine import check_stage_progression
-            check_stage_progression(supabase, lead_id, current_step, len(all_steps))
+            has_opened = _lead_has_event(supabase, lead_id, campaign_id, "opened")
+            has_clicked = _lead_has_event(supabase, lead_id, campaign_id, "clicked")
+            check_stage_progression(supabase, lead_id, current_step, len(all_steps), has_opened, has_clicked)
         except Exception:
             pass
 

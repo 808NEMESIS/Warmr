@@ -79,6 +79,7 @@ TEST_MODULES = [
     "test_cross_campaign_dedup",
     "test_campaign_performance",
     "test_events",
+    "test_stage_progression_engagement",
 ]
 
 
