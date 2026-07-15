@@ -288,6 +288,58 @@ def test_scan_stores_known_lead_reply(monkeypatch):
     assert "<parent@warmr.example>" in (rows[0]["references_header"] or "")
 
 
+def test_scan_publishes_lead_replied_and_fires_every_subscriber(monkeypatch):
+    """Fase 4 regression: the automatic reply-detection path previously never
+    triggered funnel routing, engagement scoring, or CRM sync — only a
+    notification and a webhook-queue insert fired. Spies on the three new
+    handlers prove the event-bus wiring actually reaches them."""
+    import imap_processor
+
+    store = {
+        "leads": [{"id": "lead-1", "email": "prospect@example.nl", "client_id": "client-a",
+                   "first_name": "Jan", "last_name": "Jansen", "company": "Acme", "phone": "+31600000000"}],
+        "reply_inbox_rows": [],
+    }
+    sb = _FakeSb(store)
+
+    monkeypatch.setattr(imap_processor, "imaplib",
+        type("I", (), {"IMAP4_SSL": lambda host, port: _FakeMail(_mk_raw_email("prospect@example.nl"))}))
+    monkeypatch.setattr(imap_processor, "get_imap_server", lambda p: "imap.gmail.com")
+
+    def _stub_classify(*a, **kw):
+        return {"category": "interested", "meeting_intent": True, "urgency": "high", "rationale": ""}
+    import reply_classifier
+    monkeypatch.setattr(reply_classifier, "classify_reply_with_signals", _stub_classify)
+
+    route_reply_calls = []
+    add_engagement_calls = []
+    dispatch_event_calls = []
+
+    import funnel_engine
+    import engagement_scorer
+    import crm_dispatcher
+    monkeypatch.setattr(funnel_engine, "route_reply",
+        lambda sb, client_id, lead_id, lead_email, classification, **kw:
+            route_reply_calls.append((client_id, lead_id, lead_email, classification)) or {})
+    monkeypatch.setattr(engagement_scorer, "add_engagement",
+        lambda sb, lead_id, event_type: add_engagement_calls.append((lead_id, event_type)))
+    monkeypatch.setattr(crm_dispatcher, "dispatch_event",
+        lambda client_id, lead, event_type, sb=None: dispatch_event_calls.append((client_id, lead, event_type)) or [])
+
+    inbox = {"id": "inbox-1", "email": "sender@example.nl", "provider": "google", "client_id": "client-a"}
+    imap_processor.scan_client_inbox_for_prospect_replies(inbox, "pw", sb, warmup_emails=set())
+
+    assert route_reply_calls == [("client-a", "lead-1", "prospect@example.nl", "interested")]
+    assert add_engagement_calls == [("lead-1", "replied"), ("lead-1", "interested")]
+    assert len(dispatch_event_calls) == 1
+    dc_client_id, dc_lead, dc_event_type = dispatch_event_calls[0]
+    assert dc_client_id == "client-a"
+    assert dc_event_type == "interested"
+    assert dc_lead["email"] == "prospect@example.nl"
+    assert dc_lead["first_name"] == "Jan"
+    assert dc_lead["company"] == "Acme"
+
+
 def test_scan_ignores_warmup_network_sender(monkeypatch):
     import imap_processor
     store = {

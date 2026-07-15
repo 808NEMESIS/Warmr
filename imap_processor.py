@@ -579,11 +579,14 @@ def scan_client_inbox_for_prospect_replies(
     if not client_id:
         return 0
 
-    # Pull all lead emails for this client up front (one query vs N).
+    # Pull all lead emails for this client up front (one query vs N). Widened
+    # beyond id/email so the lead.replied event payload can carry enough
+    # contact detail for CRM sync (utils/event_handlers.py) — previously
+    # id/email-only would have sent near-empty contacts to HubSpot/Pipedrive.
     try:
         leads_resp = (
             supabase.table("leads")
-            .select("id, email")
+            .select("id, email, first_name, last_name, company, phone")
             .eq("client_id", client_id)
             .execute()
         )
@@ -695,54 +698,30 @@ def scan_client_inbox_for_prospect_replies(
                     logger.error("reply_inbox insert failed for %s: %s", sender, exc)
                     continue
 
-                # Operator notification — never blocks the pipeline
-                try:
-                    from utils.notifier import notify_new_reply
-                    notify_new_reply(supabase, row)
-                except Exception as exc:
-                    logger.debug("notify_new_reply failed: %s", exc)
-
-                # Emit webhook event so CRM/Heatr can react
-                try:
-                    event_type = "lead.interested" if signals.get("category") == "interested" else "lead.replied"
-                    supabase.table("webhook_events").insert({
-                        "client_id":   client_id,
-                        "event_type":  event_type,
-                        "payload": {
-                            "lead_id":        lead["id"],
-                            "email":          sender,
-                            "subject":        subject,
-                            "classification": signals.get("category"),
-                            "meeting_intent": bool(signals.get("meeting_intent")),
-                            "urgency":        signals.get("urgency"),
-                        },
-                        "dispatched":  False,
-                    }).execute()
-                except Exception as exc:
-                    logger.debug("webhook_events insert failed: %s", exc)
-
-                # Update lead status (replied / interested / unsubscribed)
-                try:
-                    cat = signals.get("category")
-                    if cat == "unsubscribe":
-                        new_status = "unsubscribed"
-                    elif cat == "interested":
-                        new_status = "interested"
-                    else:
-                        new_status = "replied"
-                    supabase.table("leads").update({"status": new_status}).eq("id", lead["id"]).eq("client_id", client_id).execute()
-                except Exception as exc:
-                    logger.debug("leads status update failed: %s", exc)
-
-                # Reply-based unsubscribe: suppress + cancel pending sends
-                # (same GDPR-critical path as the link-click flow — a prospect
-                # replying "STOP" must stop receiving scheduled campaign emails).
-                if signals.get("category") == "unsubscribe":
-                    try:
-                        from utils.suppression import suppress_and_cancel
-                        suppress_and_cancel(supabase, client_id, lead["id"], sender, source="reply")
-                    except Exception as exc:
-                        logger.debug("suppress_and_cancel failed for %s: %s", sender, exc)
+                # Publish "lead.replied" — every side effect (operator
+                # notification, webhook dispatch, lead-status update, funnel
+                # routing, engagement scoring, CRM sync) is registered as a
+                # subscriber in utils/event_handlers.py. Previously this was
+                # 4 scattered try/except blocks here, with funnel routing,
+                # engagement scoring, and CRM sync never wired in at all —
+                # see Fase 4's architecture plan for the full trace.
+                from utils.events import default_bus, DomainEvent
+                import utils.event_handlers  # noqa: F401 — registers subscribers on import
+                default_bus.publish(supabase, DomainEvent("lead.replied", client_id, {
+                    "client_id":      client_id,
+                    "lead_id":        lead["id"],
+                    "from_email":     sender,
+                    "subject":        subject,
+                    "body":           body[:2000] if body else "",
+                    "classification": signals.get("category"),
+                    "meeting_intent": bool(signals.get("meeting_intent")),
+                    "urgency":        signals.get("urgency"),
+                    "campaign_id":    None,  # reply_inbox never records which campaign a reply is to
+                    "first_name":     lead.get("first_name"),
+                    "last_name":      lead.get("last_name"),
+                    "company":        lead.get("company"),
+                    "phone":          lead.get("phone"),
+                }))
 
                 logger.info(
                     "Stored prospect reply from %s → inbox %s (cat=%s, meeting=%s, urgency=%s).",
