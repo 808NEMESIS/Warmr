@@ -1,6 +1,9 @@
 -- ============================================================
 -- Warmr — State Machine Migration (Fase 4b, architecture item 1 of 3)
--- NOT APPLIED YET — verification-first, see below.
+--
+-- STEP 0 + STEP 1 APPLIED to production 2026-07-17 (see
+-- docs/production_schema_state.md §8, items 9-10). STEP 2 (VALIDATE
+-- CONSTRAINT) is NOT applied yet — kept as a deliberately separate step.
 --
 -- Backs utils/state_machine.py + utils/state_machines_registry.py's
 -- CAMPAIGN_LEAD_STATUS / INBOX_STATUS graphs, currently wired everywhere
@@ -42,7 +45,7 @@
 
 -- STEP 1 — additive, NOT VALID: only checked on new/updated rows, existing
 -- rows are NOT scanned (fast, no lock contention). Safe to run once STEP 0
--- confirms no unexpected values exist.
+-- confirms no unexpected values exist. APPLIED 2026-07-17.
 
 ALTER TABLE campaign_leads
   ADD CONSTRAINT campaign_leads_status_check

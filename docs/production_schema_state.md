@@ -199,3 +199,23 @@ ORDER BY table_name;
    - **SET NULL**: `experiments.variant_campaign_id/control_campaign_id → campaigns`.
 
    **Bug (gevonden, niet alleen bevestigd):** `utils/client_deletion.py`'s `hard_delete_client` verwijderde `email_events` helemaal nooit (niet in `CLIENT_ID_TABLES`, geen aparte scoping — ondanks dat de tabel wél `inbox_id`/`campaign_id`/`lead_id` heeft), en had `reply_inbox`/`sending_schedule` ná `campaigns`/`inboxes`/`leads` in de deletion-volgorde staan. Gevolg: voor elke client met campagne-historie (dus met `email_events`-rijen) faalde de laatste stap (`DELETE FROM clients`, die cascadet naar `campaigns`/`inboxes`/`leads`) met een foreign-key-violation — de client bleef gewoon bestaan ondanks een "geslaagde" GDPR-verwijdering. **Gefixt dezelfde dag**: `email_events` expliciet verwijderd via inbox_id/campaign_id/lead_id vóór de hoofdloop, `reply_inbox`/`sending_schedule` verplaatst naar vóór `campaigns`/`inboxes`/`leads`. 291/291 tests groen, inclusief 2 nieuwe regressietests die de FK-volgorde expliciet afdwingen in de fake.
+
+## §8 — Fase 4b state machine: verificatie + STEP 1 toegepast (2026-07-17)
+
+9. **CONFIRMED — verificatiequery (`api/state_machine_migration.sql` STEP 0) tegen productie gedraaid.** Resultaat:
+   ```json
+   // campaign_leads
+   [{"status": "completed", "count": 1}]
+   // inboxes
+   [{"status": "ready", "count": 2}]
+   ```
+   Productie is momenteel zeer klein (1 campaign_lead, 2 inboxes) — beide bestaande waarden vallen binnen de verwachte set (`campaign_leads`: active/pending/sending/completed/paused/bounced/unsubscribed; `inboxes`: warmup/ready/paused/retired). Geen onverwachte waarde gevonden. Dit bevestigt ook los van het log-only-bewijs (zie [[fase4_architecture_2026_07]], 0 mismatches na 1 dag productieverkeer) dat de gereconstrueerde grafieken niet tegen bestaande data ingaan.
+
+10. **CONFIRMED — STEP 1 (`NOT VALID` CHECK-constraints) toegepast, gebruiker bevestigde "Success. No rows returned".**
+   ```sql
+   ALTER TABLE campaign_leads ADD CONSTRAINT campaign_leads_status_check
+     CHECK (status IN ('active','pending','sending','completed','paused','bounced','unsubscribed')) NOT VALID;
+   ALTER TABLE inboxes ADD CONSTRAINT inboxes_status_check
+     CHECK (status IN ('warmup','ready','paused','retired')) NOT VALID;
+   ```
+   Nieuwe/gewijzigde rijen op beide tabellen worden vanaf nu op de server afgedwongen tegen de waarde-set (niet de transitie-grafiek — dat blijft log-only, zie `utils/state_machine.py`). Bestaande rijen zijn niet gescand (`NOT VALID`). **STEP 2 (`VALIDATE CONSTRAINT`, wél een full-table-scan) is nog niet gedraaid** — bewust apart gehouden per de migratie's eigen discipline, al is het risico bij deze tabelgrootte verwaarloosbaar.
